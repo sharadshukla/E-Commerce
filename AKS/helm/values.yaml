@@ -1,8 +1,8 @@
 # Registry and repository for Docker images
 # Default is docker/robotshop/image:latest
 image:
-  repo: robotshop
-  version: latest
+  repo: ecommerceregistrynew.azurecr.io
+  version: v1
   pullPolicy: IfNotPresent
 
 # EUM configuration
