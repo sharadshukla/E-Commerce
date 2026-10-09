@@ -6,14 +6,14 @@
 trigger: none
 
 pool:
-  vmImage: 'Default'
+  name: 'Default'
 
 steps:
 - checkout: self
   displayName: 'Checkout E-Commerce GitHub repository'
 
-- script: |
-    echo "GitHub repository checkout successful!"
-    echo "Repository contents:"
-    ls -la
+- powershell: |
+    Write-Host "GitHub repository checkout successful!"
+    Write-Host "Repository contents:"
+    Get-ChildItem
   displayName: 'Verify repository contents'
