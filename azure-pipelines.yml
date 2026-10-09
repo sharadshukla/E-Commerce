@@ -6,7 +6,7 @@
 trigger: none
 
 pool:
-  vmImage: Default
+  vmImage: 'Default'
 
 steps:
 - checkout: self
