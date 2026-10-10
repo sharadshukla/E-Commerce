@@ -1,50 +1,76 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger: none
 
 pool:
   name: 'Default'
 
 steps:
-- checkout: self
-  displayName: 'Checkout E-Commerce GitHub repository'
+  # Step 1: Checkout GitHub repository
+  - checkout: self
+    displayName: 'Checkout E-Commerce GitHub repository'
 
-- powershell: |
-    Write-Host "Checking Bicep installation..."
+  # Step 2: Check Bicep installation and validate
+  - powershell: |
+      Write-Host "Checking Bicep installation..."
 
-    az bicep version 2>$null
+      az bicep version 2>$null
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "Bicep is not installed. Installing now..."
+      if ($LASTEXITCODE -ne 0) {
+          Write-Host "Bicep is not installed. Installing now..."
 
-        az bicep install
+          az bicep install
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Bicep installation failed."
+          }
+      }
+      else {
+          Write-Host "Bicep is already installed. Skipping installation."
+      }
+
+      Write-Host "Bicep version:"
+      az bicep version
+
+      if ($LASTEXITCODE -ne 0) {
+          throw "Bicep is still unavailable."
+      }
+
+      Write-Host "Validating Bicep template..."
+      az bicep build --file infra/main.bicep --stdout | Out-Null
+      $buildExitCode = $LASTEXITCODE
+
+      if ($buildExitCode -ne 0) {
+          throw "Bicep validation failed."
+      }
+
+      Write-Host "Bicep validation successful!"
+
+    displayName: 'Check Bicep installation and validate'
+
+  # Step 3: Authenticate to Azure using Workload Identity Federation
+  - task: AzureCLI@2
+    displayName: 'Verify Azure authentication'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        Write-Host "Checking Azure authentication..."
+
+        az account show --output table
 
         if ($LASTEXITCODE -ne 0) {
-            throw "Bicep installation failed."
+            throw "Azure authentication failed."
         }
-    }
-    else {
-        Write-Host "Bicep is already installed. Skipping installation."
-    }
 
-    Write-Host "Bicep version:"
-    az bicep version
+        Write-Host "Checking resource group access..."
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "Bicep is still unavailable."
-    }
+        az group show `
+          --name e-commerce-app `
+          --query "{Name:name, Location:location}" `
+          --output table
 
-    Write-Host "Validating Bicep template..."
-    az bicep build --file infra/main.bicep --stdout | Out-Null
-    $buildExitCode = $LASTEXITCODE
+        if ($LASTEXITCODE -ne 0) {
+            throw "Resource group access failed."
+        }
 
-    if ($buildExitCode -ne 0) {
-        throw "Bicep validation failed."
-    }
-
-    Write-Host "Bicep validation successful!"
-
-  displayName: 'Check Bicep installation and validate'
+        Write-Host "Azure authentication verified successfully!"
