@@ -13,7 +13,18 @@ steps:
   displayName: 'Checkout E-Commerce GitHub repository'
 
 - powershell: |
-    Write-Host "GitHub repository checkout successful!"
-    Write-Host "Repository contents:"
-    Get-ChildItem
-  displayName: 'Verify repository contents'
+    Write-Host "Checking Azure CLI..."
+    az version
+
+    Write-Host "Checking Bicep version..."
+    az bicep version
+
+    Write-Host "Validating Bicep infrastructure template..."
+    az bicep build --file infra/main.bicep --stdout | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+      throw "Bicep validation failed."
+    }
+
+    Write-Host "Bicep validation successful!"
+  displayName: 'Validate Bicep infrastructure'
