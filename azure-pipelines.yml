@@ -74,3 +74,25 @@ steps:
         }
 
         Write-Host "Azure authentication verified successfully!"
+
+  # Step 4: Deploy Azure Container Registry using Bicep
+  - task: AzureCLI@2
+    displayName: 'Deploy ACR using Bicep'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        Write-Host "Deploying Azure Container Registry..."
+
+        az deployment group create `
+          --resource-group e-commerce-app `
+          --name ecommerce-acr-deployment `
+          --template-file infra/main.bicep `
+          --parameters acrName=ecommerceregistrynew
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "ACR deployment failed."
+        }
+
+        Write-Host "ACR deployment completed successfully!"
