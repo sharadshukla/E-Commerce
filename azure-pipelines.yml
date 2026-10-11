@@ -1,30 +1,98 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger: none
 
 pool:
   name: 'Default'
 
 steps:
-- checkout: self
-  displayName: 'Checkout E-Commerce GitHub repository'
+  # Step 1: Checkout GitHub repository
+  - checkout: self
+    displayName: 'Checkout E-Commerce GitHub repository'
 
-- powershell: |
-    Write-Host "Checking Azure CLI..."
-    az version
+  # Step 2: Check Bicep installation and validate
+  - powershell: |
+      Write-Host "Checking Bicep installation..."
 
-    Write-Host "Checking Bicep version..."
-    az bicep version
+      az bicep version 2>$null
 
-    Write-Host "Validating Bicep infrastructure template..."
-    az bicep build --file infra/main.bicep --stdout | Out-Null
+      if ($LASTEXITCODE -ne 0) {
+          Write-Host "Bicep is not installed. Installing now..."
 
-    if ($LASTEXITCODE -ne 0) {
-      throw "Bicep validation failed."
-    }
+          az bicep install
 
-    Write-Host "Bicep validation successful!"
-  displayName: 'Validate Bicep infrastructure'
+          if ($LASTEXITCODE -ne 0) {
+              throw "Bicep installation failed."
+          }
+      }
+      else {
+          Write-Host "Bicep is already installed. Skipping installation."
+      }
+
+      Write-Host "Bicep version:"
+      az bicep version
+
+      if ($LASTEXITCODE -ne 0) {
+          throw "Bicep is still unavailable."
+      }
+
+      Write-Host "Validating Bicep template..."
+      az bicep build --file infra/main.bicep --stdout | Out-Null
+      $buildExitCode = $LASTEXITCODE
+
+      if ($buildExitCode -ne 0) {
+          throw "Bicep validation failed."
+      }
+
+      Write-Host "Bicep validation successful!"
+
+    displayName: 'Check Bicep installation and validate'
+
+  # Step 3: Authenticate to Azure using Workload Identity Federation
+  - task: AzureCLI@2
+    displayName: 'Verify Azure authentication'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        Write-Host "Checking Azure authentication..."
+
+        az account show --output table
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Azure authentication failed."
+        }
+
+        Write-Host "Checking resource group access..."
+
+        az group show `
+          --name e-commerce-app `
+          --query "{Name:name, Location:location}" `
+          --output table
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Resource group access failed."
+        }
+
+        Write-Host "Azure authentication verified successfully!"
+
+  # Step 4: Deploy Azure Container Registry using Bicep
+  - task: AzureCLI@2
+    displayName: 'Deploy ACR using Bicep'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        Write-Host "Deploying Azure Container Registry..."
+
+        az deployment group create `
+          --resource-group e-commerce-app `
+          --name ecommerce-acr-deployment `
+          --template-file infra/main.bicep `
+          --parameters acrName=ecommerceregistrynew
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "ACR deployment failed."
+        }
+
+        Write-Host "ACR deployment completed successfully!"
