@@ -75,15 +75,15 @@ steps:
 
         Write-Host "Azure authentication verified successfully!"
 
-  # Step 4: Deploy Azure Container Registry using Bicep
+  # Step 4: Deploy Azure Infrastructure using Bicep
   - task: AzureCLI@2
-    displayName: 'Deploy ACR using Bicep'
+    displayName: 'Deploy Azure Infrastructure (ACR + AKS)'
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
       scriptType: 'ps'
       scriptLocation: 'inlineScript'
       inlineScript: |
-        Write-Host "Deploying Azure Container Registry..."
+        Write-Host "Deploying ACR and AKS using Bicep..."
 
         az deployment group create `
           --resource-group e-commerce-app `
@@ -92,7 +92,7 @@ steps:
           --parameters acrName=ecommerceregistrynew
 
         if ($LASTEXITCODE -ne 0) {
-            throw "ACR deployment failed."
+            throw "Azure infrastructure deployment failed."
         }
 
-        Write-Host "ACR deployment completed successfully!"
+        Write-Host "Azure infrastructure deployment completed successfully!"
