@@ -1,186 +1,111 @@
-# Stan's Robot Shop
+# Robot Shop Helm Chart on AKS
 
-Use this helm chart to customise your install of Stan's Robot Shop.
+This Helm chart deploys the upstream Robot Shop sample application to an Azure Kubernetes Service (AKS) cluster. It creates the application’s Kubernetes workloads and Services.
 
-### Helm v2.x
+The chart does not provision AKS or Azure Container Registry (ACR), build or push container images, or grant AKS permission to pull from ACR. Those steps must be completed separately. Robot Shop is a demonstration application and is not intended for production use.
 
-```shell
-$ helm install --name robot-shop --namespace robot-shop .
-```
+## Prerequisites
 
-### Helm v3.x
+- An AKS cluster with `kubectl` access.
+- Helm 3.
+- The application images published to ACR with the repository names and tag listed below.
+- The AKS kubelet identity granted the `AcrPull` role on the registry.
+- A Kubernetes StorageClass named `default` for the Redis volume, unless the chart template is updated to use a different StorageClass.
+
+Check cluster access and available StorageClasses:
 
 ```bash
-$ kubectl create ns robot-shop
-$ helm install robot-shop --namespace robot-shop .
+kubectl get nodes
+kubectl get storageclass
 ```
 
-## Images
+## Container images
 
-By default the images are pulled from Docker Hub. Setting `image.repo` this can be changed, for example:
+The chart builds application image names from `image.repo` and `image.version`. The following images must be available in that registry with the selected tag:
 
-```shell
-$ helm install --set image.repo=eu.gcr.io/acme ...
+```text
+rs-cart
+rs-catalogue
+rs-dispatch
+rs-mongodb
+rs-mysql-db
+rs-payment
+rs-ratings
+rs-shipping
+rs-user
+rs-web
 ```
 
-Will pull images from the European Google registry project `acme`.
+Redis is pulled separately from Docker Hub as `redis:4.0.6`.
 
-By default the latest version of the images is pulled. A specific version can be used:
+## Install or upgrade
 
-```shell
-$ helm install --set image.version=0.1.2 ...
+Run these commands from the repository root. Replace the registry hostname and tag with values that match the images you pushed:
+
+```bash
+ACR_LOGIN_SERVER="your-registry.azurecr.io"
+IMAGE_VERSION="v1"
+
+helm lint ./AKS/helm
+
+helm upgrade --install robot-shop ./AKS/helm \
+  --namespace robot-shop \
+  --create-namespace \
+  --wait \
+  --timeout 10m \
+  --set "image.repo=$ACR_LOGIN_SERVER" \
+  --set "image.version=$IMAGE_VERSION"
 ```
 
-It is recommened to always use the latest version.
+## Verify the release
 
-## Pod Security Policy
-
-If you wish to enable [PSP](https://kubernetes.io/docs/concepts/policy/pod-security-policy/)
-
-```shell
-$ helm install --set psp.enabled=true ...
+```bash
+helm status robot-shop --namespace robot-shop
+kubectl get pods --namespace robot-shop
+kubectl get services --namespace robot-shop
+kubectl get pvc --namespace robot-shop
 ```
 
-## Payment Gateway
+By default, the `web` Service is type `LoadBalancer` and listens on port `8080`. Wait for Azure to assign an external address, then open `http://<EXTERNAL-IP>:8080` in a browser. This chart does not configure an Ingress, custom domain, or TLS.
 
-By default the `payment` service uses https://www.paypal.com as the pseudo payment provider. The code only does a HTTP GET against this url. You can use a different url.
+## Common configuration values
 
-```shell
-$ helm install --set payment.gateway=https://foobar.com ...
-```
+| Value | Current default | Purpose |
+|---|---|---|
+| `image.repo` | Set in `values.yaml` | Base registry hostname for the Robot Shop application images. Override it with your ACR login server. |
+| `image.version` | `v1` | Tag used for the application images. |
+| `image.pullPolicy` | `IfNotPresent` | Kubernetes image pull policy. |
+| `nodeport` | `false` | When false, exposes `web` through a LoadBalancer. When true, uses a NodePort instead. |
+| `payment.gateway` | `null` | Optional URL used by the sample payment service. |
+| `eum.key`, `eum.url` | No key; upstream endpoint | Optional Instana website monitoring configuration. Do not pass real secrets directly on a command line. |
+| `<workload>.affinity` | `{}` | Optional scheduling affinity for an individual workload. |
+| `<workload>.nodeSelector` | `{}` | Optional node labels for scheduling an individual workload. |
+| `<workload>.tolerations` | `[]` | Optional tolerations for scheduling an individual workload. |
 
-## Website Monitoring / End-User Monitoring
+Workload scheduling values can be set for `cart`, `catalogue`, `dispatch`, `mongodb`, `mysql`, `payment`, `rabbitmq`, `ratings`, `redis`, `shipping`, `user`, and `web`.
 
-Optionally Website Monitoring / End-User Monitoring can be enabled for the web pages. Take a look at the [documentation](https://docs.instana.io/website_monitoring/) to see how to get a key and an endpoint url.
+Example override file:
 
-```shell
-$ helm install \
-    --set eum.key=xxxxxxxxx \
-    --set eum.url=https://eum-eu-west-1.instana.io \
-    ...
-```
-
-## Use with Minis
-
-When running on `minishift` or `minikube` set `nodeport` to true. The store will then be available on the IP address of your mini and node port of the web service.
-
-```shell
-$ mini[kube|shift] ip
-192.168.66.101
-$ kubectl get svc web
-```
-
-Combine the IP and port number to make the URL `http://192.168.66.101:32145`
-
-### MiniShift
-
-Openshift is like K8s but not K8s. Set `openshift` to true or things will break. See the notes and scripts in the OpenShift directory of this repo.
-
-```shell
-$ helm install robot-shop --set openshift=true helm
-```
-
-## Deployment Parameters
-
-| Key              | Default | Type   | Description |
-| ---------------- | ------- | ------ | ----------- |
-| eum.key          | null    | string | EUM Access Key |
-| eum.url          | https://eum-eu-west-1.instana.io | url | EUM endpoint URL |
-| image.pullPolicy | IfNotPresent | string | Kubernetes pull policy. One of Always,IfNotPresent, or Never. |
-| image.repo       | robotshop | string | Base docker repository to pull the images from. |
-| image.version    | latest | string | Docker tag to pull. |
-| nodeport         | false | booelan | Whether to expose the services via node port. |
-| openshift        | false | boolean | If OpenShift additional configuration is applied. |
-| payment.gateway  | null | string | External URL end-point to simulate partial/3rd party traces. |
-| psp.enabled      | false | boolean | Enable Pod Security Policy for clusters with a PSP Admission controller |
-| redis.storageClassName | standard | string | Storage class to use with Redis's StatefulSet. The default for EKS is gp2. |
-| ocCreateRoute    | false | boolean | If you are running on OpenShift and need a Route to the web service, set this to `true` |
-| `<workload>`.affinity    | {} | object | Affinity for pod assignment on nodes with matching labels (Refer [here](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity)) |
-| `<workload>`.nodeSelector    | {} | object | Node labels for pod assignment (Refer [here](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector)) |
-| `<workload>`.tolerations    | [] | list | Tolerations for pod assignment on nodes with matching taints (Refer [here](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)) |
----
-> ### Notes for `affinity` and `tolerations`
-> `<workload>` can be substituted with the different microservices consisting of Robot shop, namely:
-> - [`cart`](./templates/cart-deployment.yaml)
-> - [`catalogue`](./templates/catalogue-deployment.yaml)
-> - [`dispatch`](./templates/dispatch-deployment.yaml)
-> - [`mongodb`](./templates/mongodb-deployment.yaml)
-> - [`mysql`](./templates/mysql-deployment.yaml)
-> - [`payment`](./templates/payment-deployment.yaml)
-> - [`rabbitmq`](./templates/rabbitmq-deployment.yaml)
-> - [`ratings`](./templates/ratings-deployment.yaml)
-> - [`redis`](./templates/redis-statefulset.yaml)
-> - [`shipping`](./templates/shipping-deployment.yaml)
-> - [`user`](./templates/user-deployment.yaml)
-> - [`web`](./templates/web-deployment.yaml)
->
-> `affinity`, `nodeSelector` and `tolerations` can be set for individual workloads.
-------
-## Examples for deployment using `affinities` and `tolerations`
-<br />
-
-`values.yaml`
 ```yaml
-.
-..
-...
-shipping:
-    gateway: null
-    affinity:
-        nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-                - key: node-restriction.kubernetes.io/pool_0
-                    operator: Exists
-                    values: []
-    tolerations:
-        - key: "pool_0"
-        operator: "Equal"
-        value: "true"
-        effect: "NoSchedule"
-        - key: "pool_0"
-        operator: "Equal"
-        value: "true"
-        effect: "NoExecute"
-    nodeSelector: {}
-
-user:
-    affinity:
-        nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
-                - key: node-restriction.kubernetes.io/pool_1
-                    operator: Exists
-                    values: []
-    tolerations:
-        - key: "pool_1"
-        operator: "Equal"
-        value: "true"
-        effect: "NoSchedule"
-        - key: "pool_1"
-        operator: "Equal"
-        value: "true"
-        effect: "NoExecute"
-    nodeSelector: {}
-...
-..
-.
- ```
-
-In this example, the `shipping` Pods will be deployed on only those nodes that have the label `node-restriction.kubernetes.io/pool_0` and are tainted using
-```
-kubectl taint node <node_name> pool_0=true:NoSchedule
-kubectl taint node <node_name> pool_0=true:NoExecute
+web:
+  nodeSelector:
+    kubernetes.io/os: linux
+  tolerations: []
 ```
 
-Similarly, the `user` Pods will be deployed on only those nodes that have the label `node-restriction.kubernetes.io/pool_1` and are tainted using
-```
-kubectl taint node <node_name> pool_1=true:NoSchedule
-kubectl taint node <node_name> pool_1=true:NoExecute
+Apply it with `-f my-values.yaml` on the `helm upgrade --install` command.
+
+## AKS chart notes
+
+- The Redis StatefulSet requests a 1 Gi persistent volume and currently specifies the StorageClass name `default` directly in its template. The `redis.storageClassName` value in `values.yaml` is not currently wired into that template. Confirm that `default` exists in the cluster, or update the template before installing.
+- The MySQL workload in this chart does not have a persistent volume. Its data is not durable across pod replacement.
+- Keep `psp.enabled` set to `false`; Pod Security Policy support is a legacy chart option and is not part of this AKS deployment.
+- NodePort and Instana monitoring are optional upstream settings; they are not required for the Azure deployment described here.
+
+## Uninstall
+
+```bash
+helm uninstall robot-shop --namespace robot-shop
 ```
 
-Hence, this way we can control which `Robot shop` workloads are running on which nodes/nodepools.
-
-> *Note*: `nodeSelector` will behave in a similar fashion.
+Review and remove any remaining PVCs separately if you also want to delete the Redis volume and its data.

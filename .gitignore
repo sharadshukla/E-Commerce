@@ -4,3 +4,5 @@
 vendor/
 Gopkg.lock.env
 .env
+# Generated ARM templates from Bicep
+infra/*.json
