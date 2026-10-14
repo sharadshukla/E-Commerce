@@ -15,3 +15,7 @@ steps:
       Write-Host "Checking container operating system..."
       docker info --format '{{.OSType}}'
     displayName: 'Verify Docker connectivity'
+
+  - powershell: |
+      docker build -t rs-web:ci-test ./web
+    displayName: 'Build Robot Shop web image'
