@@ -1,0 +1,17 @@
+trigger: none
+pr: none
+
+pool:
+  name: Default
+
+steps:
+  - powershell: |
+      Write-Host "Checking Docker CLI..."
+      docker --version
+
+      Write-Host "Checking Docker Engine connectivity..."
+      docker version
+
+      Write-Host "Checking container operating system..."
+      docker info --format '{{.OSType}}'
+    displayName: 'Verify Docker connectivity'
