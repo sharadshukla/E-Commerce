@@ -19,3 +19,12 @@ steps:
   - powershell: |
       docker build -t rs-web:ci-test ./web
     displayName: 'Build Robot Shop web image'
+
+  - task: AzureCLI@2
+    displayName: 'Authenticate Docker to ACR'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        az acr login --name ecommerceregistrynew
