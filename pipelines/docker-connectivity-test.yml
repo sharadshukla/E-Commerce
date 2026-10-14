@@ -28,3 +28,9 @@ steps:
       scriptLocation: 'inlineScript'
       inlineScript: |
         az acr login --name ecommerceregistrynew
+
+        $acrLoginServer = "ecommerceregistrynew.azurecr.io"
+        $imageTag = "$(Build.BuildId)"
+
+        docker tag rs-web:ci-test "$acrLoginServer/rs-web:$imageTag"
+        docker push "$acrLoginServer/rs-web:$imageTag"
