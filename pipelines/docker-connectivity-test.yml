@@ -1,3 +1,4 @@
+
 trigger: none
 pr: none
 
@@ -11,8 +12,27 @@ variables:
 
 steps:
   - powershell: |
+      $ErrorActionPreference = 'Stop'
+
+      Write-Host "Checking Docker CLI..."
+      docker --version
+      if ($LASTEXITCODE -ne 0) {
+        throw "Docker CLI is unavailable"
+      }
+
+      Write-Host "Checking Docker Engine connectivity..."
       docker version
-      docker info --format '{{.OSType}}'
+      if ($LASTEXITCODE -ne 0) {
+        throw "Docker Engine is unavailable"
+      }
+
+      Write-Host "Checking container operating system..."
+      $containerOS = docker info --format '{{.OSType}}'
+      if ($LASTEXITCODE -ne 0 -or $containerOS.Trim() -ne 'linux') {
+        throw "Docker must be running Linux containers"
+      }
+
+      Write-Host "Docker connectivity verified."
     displayName: 'Verify Docker connectivity'
 
   - task: AzureCLI@2
@@ -24,44 +44,67 @@ steps:
       inlineScript: |
         $ErrorActionPreference = 'Stop'
 
+        # Authenticate to Azure Container Registry
+        Write-Host "Authenticating to ACR..."
+
         az acr login --name "$(acrName)"
+
         if ($LASTEXITCODE -ne 0) {
-          throw "ACR login failed"
+          throw "ACR authentication failed"
         }
 
         $acrLoginServer = "$(acrLoginServer)"
         $imageTag = "$(imageTag)"
 
+        # Map source directories to ACR image names
         $services = @(
-          'cart',
-          'catalogue',
-          'dispatch',
-          'mongodb',
-          'mysql',
-          'payment',
-          'ratings',
-          'shipping',
-          'user',
-          'web'
+          @{ folder = 'cart';      image = 'rs-cart' }
+          @{ folder = 'catalogue'; image = 'rs-catalogue' }
+          @{ folder = 'dispatch';  image = 'rs-dispatch' }
+          @{ folder = 'mongo';     image = 'rs-mongodb' }
+          @{ folder = 'mysql';     image = 'rs-mysql-db' }
+          @{ folder = 'payment';   image = 'rs-payment' }
+          @{ folder = 'ratings';   image = 'rs-ratings' }
+          @{ folder = 'shipping';  image = 'rs-shipping' }
+          @{ folder = 'user';      image = 'rs-user' }
+          @{ folder = 'web';       image = 'rs-web' }
         )
 
+        # Build, tag, and push each image
         foreach ($service in $services) {
-          $imageName = "rs-$service"
+
+          $imageName = $service.image
+          $context = Join-Path "$(Build.SourcesDirectory)" $service.folder
           $image = "${acrLoginServer}/${imageName}:${imageTag}"
 
-          Write-Host "Building $image"
+          Write-Host "----------------------------------------"
+          Write-Host "Processing $imageName"
+          Write-Host "Build context: $context"
+          Write-Host "Image: $image"
+          Write-Host "----------------------------------------"
 
-          docker build -t $image "./$service"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Docker build failed for $service"
+          if (-not (Test-Path (Join-Path $context 'Dockerfile'))) {
+            throw "Dockerfile not found for $imageName in $context"
           }
 
-          Write-Host "Pushing $image"
+          # Build and tag the Docker image
+          docker build -t $image $context
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker build failed for $imageName"
+          }
+
+          # Push the image to ACR
           docker push $image
+
           if ($LASTEXITCODE -ne 0) {
-            throw "Docker push failed for $service"
+            throw "Docker push failed for $imageName"
           }
+
+          Write-Host "Successfully published $image"
         }
 
-        Write-Host "All Robot Shop images built and pushed successfully."
+        Write-Host "----------------------------------------"
+        Write-Host "All 10 Robot Shop images published."
+        Write-Host "Image tag: $imageTag"
+        Write-Host "Registry: $acrLoginServer"
