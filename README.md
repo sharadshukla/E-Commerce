@@ -2,7 +2,7 @@
 
 **Infrastructure as Code and deployment of the Robot Shop microservices sample on Microsoft Azure.**
 
-This project takes the upstream [Robot Shop](https://github.com/instana/robot-shop) demonstration application and adds an Azure platform deployment: infrastructure provisioned with Bicep, an Azure Container Registry (ACR), Azure Kubernetes Service (AKS), and a Helm chart.
+This project takes the upstream [Robot Shop](https://github.com/instana/robot-shop) demonstration application and adds an Azure platform deployment: infrastructure provisioned with Bicep, automated container image publishing to Azure Container Registry (ACR) through Azure DevOps, Azure Kubernetes Service (AKS), and a Helm chart.
 
 The application is an upstream sample, not a production commerce platform. This repository’s engineering focus is the Azure infrastructure and deployment workflow around it.
 
@@ -27,48 +27,50 @@ The application is an upstream sample, not a production commerce platform. This 
 
 ## What this project implements
 
-- Azure infrastructure defined in Bicep: ACR and AKS, with the AKS resource in a reusable module.
-- An Azure DevOps pipeline that validates the Bicep template, authenticates through a workload identity federation service connection, and deploys infrastructure into an existing resource group.
+- Azure infrastructure defined in Bicep: ACR and AKS, with the AKS resource in a reusable module and parameters for selective ACR/AKS deployment.
+- An Azure DevOps infrastructure pipeline that validates the Bicep template, authenticates through a workload identity federation service connection, and deploys infrastructure into an existing resource group.
+- A separate Azure DevOps Docker pipeline that builds, tags with `Build.BuildId`, and pushes all ten application images to ACR using workload identity federation and registry-scoped `AcrPush`.
 - An AKS system node pool configured for cluster autoscaling from one to three nodes.
 - An AKS Helm chart configured to use version-tagged images in ACR.
 - A Kubernetes LoadBalancer Service for the web frontend.
 
-**The pipeline provisions infrastructure only.** Container image builds and pushes, the AKS kubelet identity’s `AcrPull` role assignment, and the Helm application deployment are manual steps in this release.
+**Automation boundary (v1.1.0):** The infrastructure and Docker image publishing pipelines are separate, manually triggered workflows. The AKS kubelet identity’s `AcrPull` assignment and the Helm application deployment remain manual.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
     Dev["Engineer"]
-    Pipe["Azure DevOps pipeline<br/>manual run · workload identity federation"]
-    Bicep["Bicep<br/>in existing resource group"]
+    InfraPipe["Infrastructure pipeline<br/>manual run · WIF"]
+    DockerPipe["Docker ACR CI pipeline<br/>manual run · WIF"]
+    Bicep["Bicep<br/>existing resource group"]
+    Build["Build and tag 10 images<br/>Build.BuildId"]
     ACR["Azure Container Registry"]
     AKS["AKS<br/>autoscaling system node pool"]
-    Images["Build and push images<br/>manual"]
     Pull["Assign AcrPull to kubelet identity<br/>manual"]
     Helm["Install Robot Shop with Helm<br/>manual"]
     Web["Web Service<br/>LoadBalancer :8080"]
     App["Robot Shop microservices"]
 
-    Dev --> Pipe --> Bicep
+    Dev --> InfraPipe --> Bicep
     Bicep --> ACR
     Bicep --> AKS
-    Dev --> Images --> ACR
+    Dev --> DockerPipe --> Build --> ACR
     Dev --> Pull --> AKS
     Dev --> Helm --> AKS
-    ACR -->|"image pulls"| AKS
-    AKS --> App
-    App --> Web
+    ACR -->|"image pulls when configured"| AKS
+    AKS --> App --> Web
 ```
 
-The Bicep deployment expects the resource group to exist already. The application’s web Service used port **8080** in the recorded AKS deployment; the remaining application Services were internal cluster Services. No Application Gateway or Ingress-based public entry point was part of the verified deployment.
+The Bicep deployment expects the resource group to exist already. The two pipelines were verified independently; the newly published Build ID images have not been verified in an AKS deployment. The application’s web Service used port **8080** in the recorded AKS deployment; the remaining application Services were internal cluster Services. No Application Gateway or Ingress-based public entry point was part of the verified deployment.
 
 ## Architecture decisions
 
 | Decision | Reason and trade-off |
 |---|---|
-| Bicep for Azure resources | Keeps ACR and AKS configuration declarative and repeatable. The pipeline deploys to an existing resource group rather than creating the resource group. |
-| Azure DevOps workload identity federation | Lets the pipeline authenticate to Azure through its service connection without storing a client secret in the YAML. The service connection and its permissions are configured in Azure DevOps. |
+| Bicep for Azure resources | Keeps ACR and AKS configuration declarative and repeatable, including optional ACR-only provisioning. The infrastructure pipeline deploys to an existing resource group rather than creating the resource group. |
+| Azure DevOps workload identity federation | Lets both pipelines authenticate to Azure through a service connection without storing a client secret in YAML. Azure RBAC separately governs deployment and registry access. |
+| Registry-scoped image publishing | The Docker pipeline uses `AcrPush` on the registry rather than the ACR admin account; Build ID tags distinguish pipeline runs. |
 | ACR admin account disabled | Avoids using the registry’s shared admin credentials. AKS image-pull access was granted separately to its kubelet managed identity. That role assignment was manual in this release. |
 | Helm for application resources | Groups the microservice Kubernetes resources and image settings in one chart. The chart install was a separate manual operation from infrastructure provisioning. |
 | LoadBalancer Service on port 8080 | Provided a direct browser-accessible endpoint for this learning deployment. It creates a public Azure endpoint and is not a production ingress/TLS design. |
@@ -79,15 +81,15 @@ The Bicep deployment expects the resource group to exist already. The applicatio
 ### Prerequisites
 
 - An Azure subscription and an **existing** resource group.
-- Azure DevOps access and a configured workload identity federation service connection with permission to deploy into that resource group.
-- A self-hosted Azure Pipelines agent with Azure CLI and the required tooling.
-- Docker, Azure CLI, kubectl, and Helm for the manual application steps.
+- Azure DevOps access and a configured workload identity federation service connection with permission to deploy into that resource group and `AcrPush` on the registry for image publishing.
+- A self-hosted Azure Pipelines agent with Azure CLI, Docker CLI, and a reachable Docker Engine configured for Linux containers. The verified CI run used a self-hosted Windows agent.
+- Azure CLI, kubectl, and Helm for manual AKS configuration, deployment, and verification.
 
 ### 1. Provision ACR and AKS
 
-Run the Azure Pipeline manually. It checks Bicep availability, builds the Bicep template, verifies Azure and resource-group access, then deploys `infra/main.bicep`.
+Run the infrastructure Azure DevOps pipeline manually. It checks Bicep availability, builds the Bicep template, verifies Azure and resource-group access, then deploys `infra/main.bicep`.
 
-The template creates ACR and AKS. It does not create the resource group, assign ACR permissions to the kubelet identity, build container images, or install the Helm chart.
+The template has `deployAcr` and `deployAks` Boolean parameters, both defaulting to `true`. An ACR-only deployment was verified with `deployAcr=true` and `deployAks=false`. The template does not create the resource group, assign `AcrPull` to the AKS kubelet identity, build container images, or install the Helm chart. Confirm how parameters are passed by the infrastructure pipeline before assuming it supports selective deployments through its UI.
 
 ### 2. Grant AKS permission to pull from ACR
 
@@ -95,21 +97,15 @@ After AKS and ACR exist, assign the `AcrPull` role to the AKS **kubelet identity
 
 ### 3. Build and push the application images
 
-Log in to ACR, then build and push the image repositories and tag expected by the Helm chart. Set these values for your registry before running the commands:
+Run the separate Azure DevOps pipeline defined in [`pipelines/docker-acr.yml`](pipelines/docker-acr.yml). It uses the `sc-az-ecommerce-wif` service connection to authenticate to ACR, then builds, tags, and pushes the ten Robot Shop images from their respective Dockerfiles. Image tags use the Azure DevOps `Build.BuildId` value; no registry admin password is required.
 
-```bash
-ACR_NAME="your-acr-name"
-ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer --output tsv)
-az acr login --name "$ACR_NAME"
-docker build -t "$ACR_LOGIN_SERVER/rs-web:v1" ./web
-docker push "$ACR_LOGIN_SERVER/rs-web:v1"
-```
+The pipeline successfully published all ten repositories to `ecommerceregistrynew.azurecr.io` with tag **`60`** on 14 October 2026. The images are `rs-cart`, `rs-catalogue`, `rs-dispatch`, `rs-mongodb`, `rs-mysql-db`, `rs-payment`, `rs-ratings`, `rs-shipping`, `rs-user`, and `rs-web`. The chart uses a separate Redis image.
 
-Repeat for the other application images referenced by `AKS/helm/templates`. The Redis image is specified separately in the chart. Image publication is not automated by the Azure Pipeline in this version.
+This pipeline publishes images to ACR; it does **not** deploy them to AKS or change the Helm release. Record the resulting Build ID for any later Helm deployment.
 
 ### 4. Deploy the application with Helm
 
-Install the chart with the registry and tag for your deployment:
+After provisioning AKS and granting its kubelet identity `AcrPull`, install the chart manually with the registry and a tag that exists for all required application images. The example below uses `60`, which was published by the CI pipeline but has **not** been verified as an AKS deployment:
 
 ```bash
 helm upgrade --install robot-shop ./AKS/helm \
@@ -118,7 +114,7 @@ helm upgrade --install robot-shop ./AKS/helm \
   --wait \
   --timeout 10m \
   --set "image.repo=$ACR_LOGIN_SERVER" \
-  --set image.version=v1
+  --set image.version=60
 ```
 
 ### 5. Verify the deployment
@@ -133,7 +129,7 @@ Confirm that the pods are ready, the `web` Service has an external address, and 
 
 ## Deployment evidence
 
-The deployment was verified on **11 October 2026**. The Azure resources have since been removed, so the outputs below are historical evidence and this repository does not provide a live demo endpoint.
+The **AKS application deployment** was verified on **11 October 2026** using the earlier `v1` image tag. That cluster was subsequently removed, so the outputs below are historical evidence and this repository does not provide a live demo endpoint. ACR was later recreated for CI testing; publishing tag `60` does not constitute a new AKS deployment.
 
 ![AKS application pods showing Ready and Running status during verification](docs/images/aks-pods-2026-10-11.png)
 
@@ -182,29 +178,30 @@ The initial Helm install used `--wait` and timed out while the application was s
 
 - Robot Shop is an upstream demonstration application and is **not intended for production use**; its own upstream documentation notes limited error handling and missing application security.
 - The resource group must be created before the pipeline runs.
-- Container builds and ACR pushes, the kubelet `AcrPull` assignment, and Helm deployment are manual.
+- Container builds and ACR pushes are automated by a manually triggered pipeline. The kubelet `AcrPull` assignment and Helm deployment remain manual.
 - The MySQL workload has no persistent volume in this chart, so database data is not durable across pod replacement.
 - The web Service uses a public LoadBalancer on port 8080; ingress, custom domain, and TLS are not configured.
-- The chart uses the `v1` image tag in the recorded deployment. A digest-pinned or immutable-tag release process is a future improvement.
+- The recorded AKS deployment used tag `v1`; the later CI run published tag `60` to ACR without deploying it to AKS. Digest-pinned deployment and an end-to-end image release process remain future improvements.
 - The recorded Helm install timed out and its release status was not reconciled after application recovery.
 
 ## Next iterations
 
 The next versions can build on this working infrastructure and application deployment path in small, verifiable steps:
 
-1. **Automate application delivery:** build and push service images with immutable tags, then deploy the Helm release from Azure Pipelines.
+1. **Automate application deployment:** consume CI-published image tags and deploy the Helm release from Azure Pipelines; consider digest pinning for stronger release traceability.
 2. **Automate Azure permissions:** provision the AKS kubelet identity’s `AcrPull` role assignment as part of the infrastructure workflow, with least-privilege scope.
 3. **Improve application operations:** add persistent storage and backup for stateful services, then configure health checks and application autoscaling where the upstream app supports them.
 4. **Add secure public access:** introduce an ingress or gateway, TLS, and a custom domain; move application secrets into an appropriate secret-management flow.
 5. **Add observability and controlled load testing:** integrate Azure Monitor/Log Analytics and run a documented non-production load test. The repository’s Fluentd and Locust examples, if retained, should be treated as optional examples until they are wired into and tested with this Azure deployment.
 
-These are candidate improvements, not features delivered by v1. The application itself remains an upstream demonstration project and is not being presented as production-ready.
+These are candidate improvements, not features delivered by v1.1.0. The application itself remains an upstream demonstration project and is not being presented as production-ready.
 
 ## Repository areas
 
 - `infra/` — Bicep entry point and AKS module.
 - `AKS/helm/` — Helm chart and Kubernetes templates.
 - `azure-pipelines.yml` — Azure DevOps infrastructure pipeline.
+- `pipelines/docker-acr.yml` — Azure DevOps Docker build, tag, and ACR push pipeline.
 - Application service directories — upstream Robot Shop source and Dockerfiles.
 - `docker-compose.yaml` — upstream local development path.
 - `docs/images/` — selected, sanitized deployment evidence screenshots.
@@ -216,5 +213,5 @@ The application is based on [Instana Robot Shop](https://github.com/instana/robo
 
 ---
 
-**Release scope:** v1.0 documents the Azure infrastructure and AKS application deployment path, including its manual handoffs and deployment evidence. The next iterations above describe possible automation, operations, security, and observability improvements.
+**Release scope:** v1.1.0 adds verified Docker image build-and-push automation and selective Bicep resource deployment to the v1.0.0 infrastructure and historical AKS application deployment. Helm deployment and AKS image-pull authorization remain manual.
 
