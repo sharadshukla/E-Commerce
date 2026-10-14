@@ -4,33 +4,64 @@ pr: none
 pool:
   name: Default
 
+variables:
+  acrName: 'ecommerceregistrynew'
+  acrLoginServer: 'ecommerceregistrynew.azurecr.io'
+  imageTag: '$(Build.BuildId)'
+
 steps:
   - powershell: |
-      Write-Host "Checking Docker CLI..."
-      docker --version
-
-      Write-Host "Checking Docker Engine connectivity..."
       docker version
-
-      Write-Host "Checking container operating system..."
       docker info --format '{{.OSType}}'
     displayName: 'Verify Docker connectivity'
 
-  - powershell: |
-      docker build -t rs-web:ci-test ./web
-    displayName: 'Build Robot Shop web image'
-
   - task: AzureCLI@2
-    displayName: 'Authenticate Docker to ACR'
+    displayName: 'Build and push Robot Shop images to ACR'
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
       scriptType: 'ps'
       scriptLocation: 'inlineScript'
       inlineScript: |
-        az acr login --name ecommerceregistrynew
+        $ErrorActionPreference = 'Stop'
 
-        $acrLoginServer = "ecommerceregistrynew.azurecr.io"
-        $imageTag = "$(Build.BuildId)"
+        az acr login --name "$(acrName)"
+        if ($LASTEXITCODE -ne 0) {
+          throw "ACR login failed"
+        }
 
-        docker tag rs-web:ci-test "$acrLoginServer/rs-web:$imageTag"
-        docker push "$acrLoginServer/rs-web:$imageTag"
+        $acrLoginServer = "$(acrLoginServer)"
+        $imageTag = "$(imageTag)"
+
+        $services = @(
+          'cart',
+          'catalogue',
+          'dispatch',
+          'mongodb',
+          'mysql',
+          'payment',
+          'ratings',
+          'shipping',
+          'user',
+          'web'
+        )
+
+        foreach ($service in $services) {
+          $imageName = "rs-$service"
+          $image = "${acrLoginServer}/${imageName}:${imageTag}"
+
+          Write-Host "Building $image"
+
+          docker build -t $image "./$service"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker build failed for $service"
+          }
+
+          Write-Host "Pushing $image"
+
+          docker push $image
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker push failed for $service"
+          }
+        }
+
+        Write-Host "All Robot Shop images built and pushed successfully."
