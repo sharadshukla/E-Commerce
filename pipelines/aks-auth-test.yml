@@ -23,15 +23,46 @@ steps:
         throw "Failed to retrieve AKS credentials"
       }
 
+      # Install kubelogin in the agent's tool directory
+      $toolDir = Join-Path $env:AGENT_TEMPDIRECTORY 'aks-tools'
+      New-Item -ItemType Directory -Force -Path $toolDir | Out-Null
+
+      az aks install-cli `
+        --install-location "$toolDir\kubectl.exe" `
+        --kubelogin-install-location "$toolDir\kubelogin.exe"
+
+      if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install kubectl/kubelogin"
+      }
+
+      # Make the tools available to this pipeline task
+      $env:PATH = "$toolDir;$env:PATH"
+
+      # Verify installation
+      kubelogin --version
+
+      if ($LASTEXITCODE -ne 0) {
+        throw "kubelogin verification failed"
+      }
+
       kubelogin convert-kubeconfig -l azurecli
 
       if ($LASTEXITCODE -ne 0) {
         throw "Failed to configure kubelogin"
       }
 
-      kubectl auth can-i create deployments `
-        --namespace robot-shop
+      Write-Host "Checking authenticated Kubernetes identity..."
+
+      kubectl auth whoami
 
       if ($LASTEXITCODE -ne 0) {
-        throw "Kubernetes authorization check failed"
+        throw "Failed to identify Kubernetes user"
       }
+
+      $permission = kubectl auth can-i create deployments -n robot-shop
+
+      if ($LASTEXITCODE -ne 0 -or $permission.Trim() -ne 'yes') {
+        throw "Deployment permission not granted. Result: $permission"
+      }
+
+      Write-Host "AKS authentication and deployment authorization verified."
