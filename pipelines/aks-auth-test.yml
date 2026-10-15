@@ -51,6 +51,14 @@ steps:
         throw "Failed to configure kubelogin"
       }
 
+      Write-Host "Checking authenticated Kubernetes identity..."
+
+      kubectl auth whoami
+
+      if ($LASTEXITCODE -ne 0) {
+        throw "Failed to identify Kubernetes user"
+      }
+
       $permission = kubectl auth can-i create deployments -n robot-shop
 
       if ($LASTEXITCODE -ne 0 -or $permission.Trim() -ne 'yes') {
