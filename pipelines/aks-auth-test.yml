@@ -61,6 +61,15 @@ steps:
 
       $permission = kubectl auth can-i create deployments -n robot-shop
 
+      $exitCode = $LASTEXITCODE
+
+      Write-Host "Permission result: [$permission]"
+      Write-Host "kubectl exit code: [$exitCode]"
+
+      if ($exitCode -ne 0) {
+          throw "kubectl authorization check failed"
+      }
+
       if ($LASTEXITCODE -ne 0 -or $permission.Trim() -ne 'yes') {
         throw "Deployment permission not granted. Result: $permission"
       }
