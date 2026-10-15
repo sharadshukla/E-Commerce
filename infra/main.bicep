@@ -6,6 +6,9 @@ param deployAcr bool = true
 @description('Deploy Azure Kubernetes Service')
 param deployAks bool = true
 
+@description('Object ID of the Microsoft Entra group for AKS administrators')
+param aksAdminGroupObjectId string
+
 @description('Azure region for the resources')
 param location string = resourceGroup().location
 
@@ -32,6 +35,7 @@ module aks './modules/aks.bicep' = if (deployAks) {
   name: 'aks-deployment'
   params: {
     aksName: aksName
+    aksAdminGroupObjectId: aksAdminGroupObjectId
     location: location
     nodeVmSize: 'Standard_D2as_v6'
     minNodeCount: 1

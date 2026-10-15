@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: robot-shop-helm-deployer
+  namespace: robot-shop
+rules:
+  - apiGroups: [""]
+    resources:
+      - services
+      - configmaps
+      - secrets
+      - pods
+      - persistentvolumeclaims
+      - serviceaccounts
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
