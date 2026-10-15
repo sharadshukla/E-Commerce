@@ -29,9 +29,10 @@ steps:
         throw "Failed to configure kubelogin"
       }
 
-      kubectl auth can-i create deployments `
-        --namespace robot-shop
+      $permission = kubectl auth can-i create deployments -n robot-shop
 
-      if ($LASTEXITCODE -ne 0) {
-        throw "Kubernetes authorization check failed"
+      if ($LASTEXITCODE -ne 0 -or $permission.Trim() -ne 'yes') {
+        throw "Deployment permission not granted. Result: $permission"
       }
+
+      Write-Host "AKS authentication and deployment authorization verified."
