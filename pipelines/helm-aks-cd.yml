@@ -20,8 +20,7 @@ steps:
     inlineScript: |
       $ErrorActionPreference = 'Stop'
 
-      # Install kubectl and kubelogin
-      Write-Host "Checking Kubernetes tools..."
+      # Verify required Kubernetes tools
 
       foreach ($tool in @("kubectl", "kubelogin", "helm")) {
           $command = Get-Command $tool -ErrorAction SilentlyContinue
