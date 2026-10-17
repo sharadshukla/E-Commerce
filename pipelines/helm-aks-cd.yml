@@ -34,6 +34,9 @@ steps:
           }
       }
 
+      kubelogin --version
+      helm version --short
+
       # Obtain Entra-authenticated AKS credentials
       az aks get-credentials `
         --resource-group "$(resourceGroup)" `
