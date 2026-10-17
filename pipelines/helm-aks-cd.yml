@@ -89,7 +89,7 @@ steps:
       helm upgrade --install robot-shop "$(Build.SourcesDirectory)\AKS\helm" `
         --namespace "$(namespace)" `
         --set-string image.version=68 `
-        --wait `
+        --wait=legacy `
         --timeout 15m
 
       if ($LASTEXITCODE -ne 0) {
