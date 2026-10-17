@@ -21,29 +21,17 @@ steps:
       $ErrorActionPreference = 'Stop'
 
       # Install kubectl and kubelogin
-      $toolDir = "$env:AGENT_TEMPDIRECTORY\aks-tools"
-      New-Item -ItemType Directory -Force -Path $toolDir | Out-Null
+      Write-Host "Checking Kubernetes tools..."
 
-      $kubectl = Get-Command kubectl -ErrorAction SilentlyContinue
-      $kubelogin = Get-Command kubelogin -ErrorAction SilentlyContinue
+      foreach ($tool in @("kubectl", "kubelogin", "helm")) {
+          $command = Get-Command $tool -ErrorAction SilentlyContinue
 
-      if ($kubectl -and $kubelogin) {
-          Write-Host "kubectl and kubelogin are already installed."
-      } else {
-          Write-Host "Installing missing AKS CLI tools..."
-
-          $toolDir = "$env:AGENT_TEMPDIRECTORY\aks-tools"
-          New-Item -ItemType Directory -Force -Path $toolDir | Out-Null
-
-          az aks install-cli `
-            --install-location "$toolDir\kubectl.exe" `
-            --kubelogin-install-location "$toolDir\kubelogin.exe"
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Failed to install AKS CLI tools"
+          if ($command) {
+              Write-Host "$tool found at: $($command.Source)"
           }
-
-          $env:PATH = "$toolDir;$env:PATH"
+          else {
+              Write-Host "$tool NOT FOUND in agent PATH"
+          }
       }
 
       # Obtain Entra-authenticated AKS credentials
