@@ -84,3 +84,16 @@ steps:
       }
 
       Write-Host "Helm is available. CD prerequisites verified."
+
+      # Deploy Robot Shop using Helm
+      helm upgrade --install robot-shop "$(Build.SourcesDirectory)\AKS\helm" `
+        --namespace "$(namespace)" `
+        --set-string image.version=68 `
+        --wait `
+        --timeout 15m
+
+      if ($LASTEXITCODE -ne 0) {
+          throw "Helm deployment failed."
+      }
+
+      Write-Host "Robot Shop Helm deployment completed successfully."
