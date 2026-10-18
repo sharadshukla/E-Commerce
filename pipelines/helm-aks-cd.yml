@@ -1,4 +1,10 @@
 
+parameters:
+- name: imageTag
+  displayName: 'ACR image tag to deploy'
+  type: string
+  default: '68'
+
 trigger: none
 pr: none
 
@@ -10,90 +16,115 @@ variables:
   aksCluster: 'ecommerce-aks'
   namespace: 'robot-shop'
 
-steps:
-- task: AzureCLI@2
-  displayName: 'Authenticate to AKS using WIF'
-  inputs:
-    azureSubscription: 'sc-az-ecommerce-wif'
-    scriptType: 'ps'
-    scriptLocation: 'inlineScript'
-    inlineScript: |
-      $ErrorActionPreference = 'Stop'
+jobs:
+- job: ValidateAKSAccess
+  displayName: 'Validate AKS Access'
+  steps:
+  - task: AzureCLI@2
+    displayName: 'Validate WIF, AKS and Kubernetes RBAC'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        $ErrorActionPreference = 'Stop'
 
-      # Verify required Kubernetes tools
-
-      foreach ($tool in @("kubectl", "kubelogin", "helm")) {
+        # Verify required tools
+        foreach ($tool in @("kubectl", "kubelogin", "helm")) {
           $command = Get-Command $tool -ErrorAction SilentlyContinue
-
-          if ($command) {
-              Write-Host "$tool found at: $($command.Source)"
+          if (-not $command) {
+            throw "$tool is not available in the agent PATH."
           }
-          else {
-              Write-Host "$tool NOT FOUND in agent PATH"
-          }
-      }
+          Write-Host "$tool found at: $($command.Source)"
+        }
 
-      kubelogin --version
-      helm version --short
+        kubelogin --version
+        if ($LASTEXITCODE -ne 0) { throw "kubelogin check failed." }
 
-      # Obtain Entra-authenticated AKS credentials
-      az aks get-credentials `
-        --resource-group "$(resourceGroup)" `
-        --name "$(aksCluster)" `
-        --overwrite-existing
+        helm version --short
+        if ($LASTEXITCODE -ne 0) { throw "Helm check failed." }
 
-      if ($LASTEXITCODE -ne 0) {
-        throw "Failed to obtain AKS credentials"
-      }
+        # Authenticate to AKS
+        az aks get-credentials `
+          --resource-group "$(resourceGroup)" `
+          --name "$(aksCluster)" `
+          --overwrite-existing
 
-      kubelogin convert-kubeconfig -l azurecli
+        if ($LASTEXITCODE -ne 0) {
+          throw "Failed to obtain AKS credentials."
+        }
 
-      if ($LASTEXITCODE -ne 0) {
-        throw "kubelogin conversion failed"
-      }
+        kubelogin convert-kubeconfig -l azurecli
+        if ($LASTEXITCODE -ne 0) {
+          throw "kubelogin conversion failed."
+        }
 
-      # Verify authenticated identity
-      kubectl auth whoami
+        kubectl auth whoami
+        if ($LASTEXITCODE -ne 0) {
+          throw "AKS authentication failed."
+        }
 
-      if ($LASTEXITCODE -ne 0) {
-        throw "AKS authentication failed"
-      }
+        # Validate Helm deployment permissions
+        $deploymentPermission = kubectl auth can-i create deployments `
+          --namespace "$(namespace)"
 
-      # Verify deployment permission
-      $permission = kubectl auth can-i create deployments `
-        --namespace "$(namespace)"
+        if ($LASTEXITCODE -ne 0 -or $deploymentPermission.Trim() -ne 'yes') {
+          throw "Cannot create Deployments in target namespace."
+        }
 
-      if ($LASTEXITCODE -ne 0 -or $permission.Trim() -ne 'yes') {
-        throw "Kubernetes RBAC authorization failed"
-      }
+        $replicaSetPermission = kubectl auth can-i list replicasets `
+          --namespace "$(namespace)"
 
-      Write-Host "AKS authentication and RBAC verified."
+        if ($LASTEXITCODE -ne 0 -or $replicaSetPermission.Trim() -ne 'yes') {
+          throw "Cannot list ReplicaSets in target namespace."
+        }
 
+        Write-Host "AKS authentication and RBAC verified."
 
-      # Verify Helm availability
-      $helm = Get-Command helm -ErrorAction SilentlyContinue
+- job: DeployRobotShop
+  displayName: 'Deploy Robot Shop using Helm'
+  dependsOn: ValidateAKSAccess
+  condition: succeeded()
+  steps:
+  - task: AzureCLI@2
+    displayName: 'Deploy Helm release to AKS'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        $ErrorActionPreference = 'Stop'
 
-      if (-not $helm) {
-          throw "Helm is not installed or is not available in the agent PATH."
-      }
+        # Authenticate independently for this job
+        az aks get-credentials `
+          --resource-group "$(resourceGroup)" `
+          --name "$(aksCluster)" `
+          --overwrite-existing
 
-      helm version --short
+        if ($LASTEXITCODE -ne 0) {
+          throw "Failed to obtain AKS credentials."
+        }
 
-      if ($LASTEXITCODE -ne 0) {
-          throw "Helm version check failed."
-      }
+        kubelogin convert-kubeconfig -l azurecli
+        if ($LASTEXITCODE -ne 0) {
+          throw "kubelogin conversion failed."
+        }
 
-      Write-Host "Helm is available. CD prerequisites verified."
+        # Deploy selected image tag
+        helm upgrade --install robot-shop "$(Build.SourcesDirectory)\AKS\helm" `
+          --namespace "$(namespace)" `
+          --set-string image.version=${{ parameters.imageTag }} `
+          --wait=legacy `
+          --timeout 15m
 
-      # Deploy Robot Shop using Helm
-      helm upgrade --install robot-shop "$(Build.SourcesDirectory)\AKS\helm" `
-        --namespace "$(namespace)" `
-        --set-string image.version=68 `
-        --wait=legacy `
-        --timeout 15m
-
-      if ($LASTEXITCODE -ne 0) {
+        if ($LASTEXITCODE -ne 0) {
           throw "Helm deployment failed."
-      }
+        }
 
-      Write-Host "Robot Shop Helm deployment completed successfully."
+        # Verify Helm release
+        helm status robot-shop --namespace "$(namespace)"
+        if ($LASTEXITCODE -ne 0) {
+          throw "Helm release status check failed."
+        }
+
+        Write-Host "Robot Shop Helm deployment completed successfully."
