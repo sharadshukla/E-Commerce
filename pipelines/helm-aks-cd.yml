@@ -3,7 +3,7 @@ parameters:
 - name: imageTag
   displayName: 'ACR image tag to deploy'
   type: string
-  default: '68'
+  default: ''
 
 trigger: none
 pr: none
@@ -20,6 +20,13 @@ jobs:
 - job: ValidateAKSAccess
   displayName: 'Validate AKS Access'
   steps:
+  - powershell: |
+      if ([string]::IsNullOrWhiteSpace($env:IMAGE_TAG)) {
+        throw "The imageTag parameter is required. Enter the Build.BuildId tag already published to ACR (v1.2.0 used 77)."
+      }
+    displayName: 'Validate required image tag'
+    env:
+      IMAGE_TAG: ${{ parameters.imageTag }}
   - task: AzureCLI@2
     displayName: 'Validate WIF, AKS and Kubernetes RBAC'
     inputs:
@@ -88,6 +95,8 @@ jobs:
   steps:
   - task: AzureCLI@2
     displayName: 'Deploy Helm release to AKS'
+    env:
+      IMAGE_TAG: ${{ parameters.imageTag }}
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
       scriptType: 'ps'
@@ -113,7 +122,7 @@ jobs:
         # Deploy selected image tag
         helm upgrade --install robot-shop "$(Build.SourcesDirectory)\AKS\helm" `
           --namespace "$(namespace)" `
-          --set-string image.version=${{ parameters.imageTag }} `
+          --set-string "image.version=$env:IMAGE_TAG" `
           --wait=legacy `
           --timeout 15m
 

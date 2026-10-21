@@ -38,13 +38,19 @@ rs-web
 
 Redis is pulled separately from Docker Hub as `redis:4.0.6`.
 
-## Install or upgrade
+## Azure DevOps Helm CD
 
-Run these commands from the repository root. Replace the registry hostname and tag with values that match the images you pushed:
+The primary deployment path is the manually queued [`pipelines/helm-aks-cd.yml`](../../pipelines/helm-aks-cd.yml) pipeline. It validates WIF access and Kubernetes RBAC, then runs Helm against the `robot-shop` namespace. Before queueing it, configure AKS access, the namespace Role and RoleBinding, and `AcrPull` for the AKS kubelet identity as described in the [root README](../../README.md).
+
+Supply the `imageTag` parameter explicitly. It must match an image tag already published to ACR; the v1.2.0 deployment used `77`. The pipeline does not build or push images.
+
+## Manual Helm install or upgrade (fallback)
+
+Use this procedure when deploying outside Azure DevOps. Run these commands from the repository root. Replace the registry hostname and tag with values that match the images you pushed:
 
 ```bash
 ACR_LOGIN_SERVER="your-registry.azurecr.io"
-IMAGE_VERSION="v1"
+IMAGE_VERSION="77"
 
 helm lint ./AKS/helm
 
@@ -73,7 +79,7 @@ By default, the `web` Service is type `LoadBalancer` and listens on port `8080`.
 | Value | Current default | Purpose |
 |---|---|---|
 | `image.repo` | Set in `values.yaml` | Base registry hostname for the Robot Shop application images. Override it with your ACR login server. |
-| `image.version` | `v1` | Tag used for the application images. |
+| `image.version` | `v1` | Chart default tag. Override it with the tag published to ACR; the v1.2.0 deployment used `77`. |
 | `image.pullPolicy` | `IfNotPresent` | Kubernetes image pull policy. |
 | `nodeport` | `false` | When false, exposes `web` through a LoadBalancer. When true, uses a NodePort instead. |
 | `payment.gateway` | `null` | Optional URL used by the sample payment service. |
