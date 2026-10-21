@@ -1,0 +1,139 @@
+
+parameters:
+- name: imageTag
+  displayName: 'ACR image tag to deploy'
+  type: string
+  default: ''
+
+trigger: none
+pr: none
+
+pool:
+  name: Default
+
+variables:
+  resourceGroup: 'e-commerce-app'
+  aksCluster: 'ecommerce-aks'
+  namespace: 'robot-shop'
+
+jobs:
+- job: ValidateAKSAccess
+  displayName: 'Validate AKS Access'
+  steps:
+  - powershell: |
+      if ([string]::IsNullOrWhiteSpace($env:IMAGE_TAG)) {
+        throw "The imageTag parameter is required. Enter the Build.BuildId tag already published to ACR (v1.2.0 used 77)."
+      }
+    displayName: 'Validate required image tag'
+    env:
+      IMAGE_TAG: ${{ parameters.imageTag }}
+  - task: AzureCLI@2
+    displayName: 'Validate WIF, AKS and Kubernetes RBAC'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        $ErrorActionPreference = 'Stop'
+
+        # Verify required tools
+        foreach ($tool in @("kubectl", "kubelogin", "helm")) {
+          $command = Get-Command $tool -ErrorAction SilentlyContinue
+          if (-not $command) {
+            throw "$tool is not available in the agent PATH."
+          }
+          Write-Host "$tool found at: $($command.Source)"
+        }
+
+        kubelogin --version
+        if ($LASTEXITCODE -ne 0) { throw "kubelogin check failed." }
+
+        helm version --short
+        if ($LASTEXITCODE -ne 0) { throw "Helm check failed." }
+
+        # Authenticate to AKS
+        az aks get-credentials `
+          --resource-group "$(resourceGroup)" `
+          --name "$(aksCluster)" `
+          --overwrite-existing
+
+        if ($LASTEXITCODE -ne 0) {
+          throw "Failed to obtain AKS credentials."
+        }
+
+        kubelogin convert-kubeconfig -l azurecli
+        if ($LASTEXITCODE -ne 0) {
+          throw "kubelogin conversion failed."
+        }
+
+        kubectl auth whoami
+        if ($LASTEXITCODE -ne 0) {
+          throw "AKS authentication failed."
+        }
+
+        # Validate Helm deployment permissions
+        $deploymentPermission = kubectl auth can-i create deployments `
+          --namespace "$(namespace)"
+
+        if ($LASTEXITCODE -ne 0 -or $deploymentPermission.Trim() -ne 'yes') {
+          throw "Cannot create Deployments in target namespace."
+        }
+
+        $replicaSetPermission = kubectl auth can-i list replicasets `
+          --namespace "$(namespace)"
+
+        if ($LASTEXITCODE -ne 0 -or $replicaSetPermission.Trim() -ne 'yes') {
+          throw "Cannot list ReplicaSets in target namespace."
+        }
+
+        Write-Host "AKS authentication and RBAC verified."
+
+- job: DeployRobotShop
+  displayName: 'Deploy Robot Shop using Helm'
+  dependsOn: ValidateAKSAccess
+  condition: succeeded()
+  steps:
+  - task: AzureCLI@2
+    displayName: 'Deploy Helm release to AKS'
+    env:
+      IMAGE_TAG: ${{ parameters.imageTag }}
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'ps'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        $ErrorActionPreference = 'Stop'
+
+        # Authenticate independently for this job
+        az aks get-credentials `
+          --resource-group "$(resourceGroup)" `
+          --name "$(aksCluster)" `
+          --overwrite-existing
+
+        if ($LASTEXITCODE -ne 0) {
+          throw "Failed to obtain AKS credentials."
+        }
+
+        kubelogin convert-kubeconfig -l azurecli
+        if ($LASTEXITCODE -ne 0) {
+          throw "kubelogin conversion failed."
+        }
+
+        # Deploy selected image tag
+        helm upgrade --install robot-shop "$(Build.SourcesDirectory)\AKS\helm" `
+          --namespace "$(namespace)" `
+          --set-string "image.version=$env:IMAGE_TAG" `
+          --wait=legacy `
+          --timeout 15m
+
+        if ($LASTEXITCODE -ne 0) {
+          throw "Helm deployment failed."
+        }
+
+        # Verify Helm release
+        helm status robot-shop --namespace "$(namespace)"
+        if ($LASTEXITCODE -ne 0) {
+          throw "Helm release status check failed."
+        }
+
+        Write-Host "Robot Shop Helm deployment completed successfully."

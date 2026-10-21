@@ -1,0 +1,98 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.48.1.52935",
+      "templateHash": "5397473097425285061"
+    }
+  },
+  "parameters": {
+    "aksName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the AKS cluster"
+      }
+    },
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region"
+      }
+    },
+    "nodeVmSize": {
+      "type": "string",
+      "defaultValue": "Standard_D2as_v6",
+      "metadata": {
+        "description": "VM size for AKS worker nodes"
+      }
+    },
+    "minNodeCount": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "Minimum number of worker nodes"
+      }
+    },
+    "maxNodeCount": {
+      "type": "int",
+      "defaultValue": 3,
+      "metadata": {
+        "description": "Maximum number of worker nodes"
+      }
+    },
+    "aksAdminGroupObjectId": {
+      "type": "string",
+      "metadata": {
+        "description": "Microsoft Entra ID group authorized for AKS administration"
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ContainerService/managedClusters",
+      "apiVersion": "2024-09-01",
+      "name": "[parameters('aksName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "dnsPrefix": "[parameters('aksName')]",
+        "aadProfile": {
+          "managed": true,
+          "enableAzureRBAC": false,
+          "adminGroupObjectIDs": [
+            "[parameters('aksAdminGroupObjectId')]"
+          ]
+        },
+        "enableRBAC": true,
+        "disableLocalAccounts": true,
+        "agentPoolProfiles": [
+          {
+            "name": "systempool",
+            "count": "[parameters('minNodeCount')]",
+            "enableAutoScaling": true,
+            "minCount": "[parameters('minNodeCount')]",
+            "maxCount": "[parameters('maxNodeCount')]",
+            "vmSize": "[parameters('nodeVmSize')]",
+            "mode": "System",
+            "osType": "Linux",
+            "type": "VirtualMachineScaleSets"
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "aksClusterName": {
+      "type": "string",
+      "value": "[parameters('aksName')]"
+    },
+    "aksPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('aksName')), '2024-09-01', 'full').identity.principalId]"
+    }
+  }
+}

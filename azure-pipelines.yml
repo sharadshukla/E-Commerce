@@ -79,6 +79,8 @@ steps:
   # Step 4: Deploy Azure Infrastructure using Bicep
   - task: AzureCLI@2
     displayName: 'Deploy Azure Infrastructure (ACR + AKS)'
+    env:
+      AKS_ADMIN_GROUP_OBJECT_ID: $(aksAdminGroupObjectId)
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
       scriptType: 'ps'
@@ -86,11 +88,23 @@ steps:
       inlineScript: |
         Write-Host "Deploying ACR and AKS using Bicep..."
 
+        $aksAdminGroupObjectId = $env:AKS_ADMIN_GROUP_OBJECT_ID
+        if ([string]::IsNullOrWhiteSpace($aksAdminGroupObjectId) -or
+            $aksAdminGroupObjectId -eq '$(aksAdminGroupObjectId)') {
+            throw "Set the Azure DevOps pipeline variable 'aksAdminGroupObjectId' to the Microsoft Entra admin group object ID."
+        }
+
+        if ($aksAdminGroupObjectId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+            throw "The Azure DevOps pipeline variable 'aksAdminGroupObjectId' must be a valid GUID."
+        }
+
         az deployment group create `
           --resource-group e-commerce-app `
           --name ecommerce-acr-deployment `
           --template-file infra/main.bicep `
-          --parameters acrName=ecommerceregistrynew
+          --parameters `
+            acrName=ecommerceregistrynew `
+            aksAdminGroupObjectId=$aksAdminGroupObjectId
 
         if ($LASTEXITCODE -ne 0) {
             throw "Azure infrastructure deployment failed."

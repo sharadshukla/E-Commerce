@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: robot-shop-helm-deployer-binding
+  namespace: robot-shop
+subjects:
+  - kind: User
+    name: "e059106e-8e2f-47ac-be4e-c7b488d15f51"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: robot-shop-helm-deployer
+  apiGroup: rbac.authorization.k8s.io
