@@ -1,0 +1,205 @@
+
+---
+- name: Configure Azure DevOps Linux build agent
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    agent_user: azureagent
+    agent_home: /home/azureagent
+    agent_workdir: /opt/ecommerce-agent
+    azdo_agent_version: "4.261.0"
+    azdo_agent_arch: "linux-x64"
+    azdo_agent_archive: "vsts-agent-{{ azdo_agent_arch }}-{{ azdo_agent_version }}.tar.gz"
+    azdo_agent_url: "https://download.agent.dev.azure.com/agent/{{ azdo_agent_version }}/{{ azdo_agent_archive }}"
+
+  tasks:
+    - name: Ensure agent working directory exists
+      ansible.builtin.file:
+        path: "{{ agent_workdir }}"
+        state: directory
+        owner: "{{ agent_user }}"
+        group: "{{ agent_user }}"
+        mode: "0755"
+
+    - name: Install common build dependencies
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-apt
+          - git
+          - curl
+          - ca-certificates
+          - gnupg
+          - unzip
+          - jq
+        state: present
+        update_cache: true
+
+    - name: Verify bootstrap user exists
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ agent_user }}"
+
+    # Docker installation
+
+    - name: Create Docker APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Docker repository signing key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Configure Docker APT repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu
+          noble stable
+        filename: docker
+        state: present
+
+    - name: Install Docker Engine and build plugins
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Enable and start Docker service
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Add Azure DevOps agent user to Docker group
+      ansible.builtin.user:
+        name: "{{ agent_user }}"
+        groups: docker
+        append: true
+
+    
+    # Azure CLI installation
+
+    - name: Download Microsoft package signing key
+      ansible.builtin.get_url:
+        url: https://packages.microsoft.com/keys/microsoft.asc
+        dest: /tmp/microsoft.asc
+        mode: "0644"
+
+    - name: Convert Microsoft signing key to GPG format
+      ansible.builtin.command:
+        cmd: gpg --dearmor --yes -o /etc/apt/keyrings/microsoft.gpg /tmp/microsoft.asc
+      changed_when: false
+
+    - name: Configure Azure CLI APT repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg]
+          https://packages.microsoft.com/repos/azure-cli/
+          noble main
+        filename: azure-cli
+        state: present
+
+    - name: Install Azure CLI
+      ansible.builtin.apt:
+        name: azure-cli
+        state: present
+        update_cache: true
+
+    - name: Verify Azure CLI installation
+      ansible.builtin.command:
+        cmd: az version
+      register: azure_cli_version
+      changed_when: false
+
+    - name: Display Azure CLI version
+      ansible.builtin.debug:
+        var: azure_cli_version.stdout
+    
+    # Kubernetes and Helm tooling
+
+    - name: Install kubectl and kubelogin for AKS
+      ansible.builtin.command:
+        cmd: az aks install-cli --install-location /usr/local/bin/kubectl --kubelogin-install-location /usr/local/bin/kubelogin
+      args:
+        creates: /usr/local/bin/kubelogin
+
+    - name: Download official Helm installation script
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get-helm-3
+        mode: "0755"
+
+    - name: Install Helm
+      ansible.builtin.command:
+        cmd: /tmp/get-helm-3
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Verify kubectl installation
+      ansible.builtin.command:
+        cmd: kubectl version --client
+      register: kubectl_version
+      changed_when: false
+
+    - name: Verify kubelogin installation
+      ansible.builtin.command:
+        cmd: kubelogin --version
+      register: kubelogin_version
+      changed_when: false
+
+    - name: Verify Helm installation
+      ansible.builtin.command:
+        cmd: helm version --short
+      register: helm_version
+      changed_when: false
+
+    - name: Display Kubernetes tooling versions
+      ansible.builtin.debug:
+        msg:
+          - "{{ kubectl_version.stdout }}"
+          - "{{ kubelogin_version.stdout }}"
+          - "{{ helm_version.stdout }}"
+
+    - name: Display bootstrap completion message
+      ansible.builtin.debug:
+        msg: "Base Ansible configuration completed for {{ agent_user }}"
+
+    # 5. Azure DevOps agent preparation
+
+    - name: Download Azure DevOps Linux agent
+      ansible.builtin.get_url:
+        url: "{{ azdo_agent_url }}"
+        dest: "/tmp/{{ azdo_agent_archive }}"
+        mode: "0644"
+
+    - name: Extract Azure DevOps agent
+      ansible.builtin.unarchive:
+        src: "/tmp/{{ azdo_agent_archive }}"
+        dest: /opt/azdo-agent
+        remote_src: true
+        owner: "{{ agent_user }}"
+        group: "{{ agent_user }}"
+        creates: /opt/azdo-agent/config.sh
+
+    - name: Verify Azure DevOps agent configuration script
+      ansible.builtin.stat:
+        path: /opt/azdo-agent/config.sh
+      register: azdo_config_script
+
+    - name: Confirm agent installation files exist
+      ansible.builtin.assert:
+        that:
+          - azdo_config_script.stat.exists
+        fail_msg: "Azure DevOps agent installation files are missing"
