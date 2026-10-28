@@ -20,6 +20,11 @@ param sshPublicKey string
 @description('Name of the existing Key Vault containing the Azure DevOps agent registration PAT')
 param keyVaultName string
 
+@description('Git commit SHA containing the agent bootstrap configuration')
+@minLength(40)
+@maxLength(40)
+param bootstrapCommitSha string
+
 var vnetName = '${vmName}-vnet'
 var subnetName = 'agent-subnet'
 var nsgName = '${vmName}-nsg'
@@ -119,7 +124,13 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
       computerName: vmName
       adminUsername: adminUsername
 
-      customData: base64(loadTextContent('./cloud-init.yaml'))
+      customData: base64(
+        replace(
+          loadTextContent('./cloud-init.yaml'),
+          '__BOOTSTRAP_COMMIT_SHA__',
+          bootstrapCommitSha
+        )
+      )
 
       linuxConfiguration: {
         disablePasswordAuthentication: true
