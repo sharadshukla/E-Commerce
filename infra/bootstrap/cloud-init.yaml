@@ -15,15 +15,14 @@ packages:
   - unzip
 
 write_files:
-  - path: /etc/ecommerce-agent-bootstrap
+  - path: /etc/ecommerce-agent-bootstrap/config.json
     owner: root:root
-    permissions: '0644'
-    content: |
-      bootstrap_version=1.3.0
-      configuration=cloud-init
+    permissions: '0600'
+    encoding: b64
+    content: __BOOTSTRAP_CONFIG_BASE64__
 
 runcmd:
   - [mkdir, -p, /opt/ecommerce-agent]
-  - git clone https://github.com/sharadshukla/E-Commerce.git /opt/ecommerce-source
-  - git -C /opt/ecommerce-source checkout --detach __BOOTSTRAP_COMMIT_SHA__
-  - ansible-playbook -i localhost, -c local /opt/ecommerce-source/ansible/playbook.yml
+  - [python3, -c, "import json, subprocess; c=json.load(open('/etc/ecommerce-agent-bootstrap/config.json')); subprocess.run(['git', 'clone', '--', c['bootstrap_repo_url'], '/opt/ecommerce-source'], check=True); subprocess.run(['git', '-C', '/opt/ecommerce-source', 'checkout', '--detach', c['bootstrap_commit_sha']], check=True)"]
+  - [ansible-playbook, -i, "localhost,", -c, local, /opt/ecommerce-source/ansible/playbook.yml, -e, "@/etc/ecommerce-agent-bootstrap/config.json"]
+

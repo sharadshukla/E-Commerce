@@ -25,6 +25,34 @@ param keyVaultName string
 @maxLength(40)
 param bootstrapCommitSha string
 
+@description('Azure DevOps organization URL')
+param azdoOrgUrl string
+
+@description('Azure DevOps self-hosted agent pool')
+param azdoAgentPool string
+
+@description('Name assigned to the Linux agent')
+param azdoAgentName string = 'ecommerce-linux-agent'
+
+@description('Resource group containing the existing Key Vault')
+param keyVaultResourceGroup string
+
+@description('Name of the Key Vault secret containing the registration PAT')
+param keyVaultSecretName string = 'azdo-agent-registration-pat'
+
+@description('Public Git repository containing the bootstrap playbook')
+param bootstrapRepoUrl string
+
+var bootstrapConfig = {
+  azdo_org_url: azdoOrgUrl
+  azdo_agent_pool: azdoAgentPool
+  azdo_agent_name: azdoAgentName
+  keyvault_name: keyVaultName
+  keyvault_secret_name: keyVaultSecretName
+  bootstrap_repo_url: bootstrapRepoUrl
+  bootstrap_commit_sha: bootstrapCommitSha
+}
+
 var vnetName = '${vmName}-vnet'
 var subnetName = 'agent-subnet'
 var nsgName = '${vmName}-nsg'
@@ -127,8 +155,8 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
       customData: base64(
         replace(
           loadTextContent('./cloud-init.yaml'),
-          '__BOOTSTRAP_COMMIT_SHA__',
-          bootstrapCommitSha
+          '__BOOTSTRAP_CONFIG_BASE64__',
+          base64(string(bootstrapConfig))
         )
       )
 
@@ -174,10 +202,11 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
 
 module keyVaultRbac '../modules/keyvault-rbac.bicep' = {
   name: 'keyvault-agent-rbac'
-  scope: resourceGroup('ecommerce-security-rg')
+  scope: resourceGroup(keyVaultResourceGroup)
   params: {
     keyVaultName: keyVaultName
     principalId: vm.identity.principalId
+    secretName: keyVaultSecretName
   }
 }
 

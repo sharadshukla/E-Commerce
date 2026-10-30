@@ -96,11 +96,24 @@
         url: https://packages.microsoft.com/keys/microsoft.asc
         dest: /tmp/microsoft.asc
         mode: "0644"
+      register: microsoft_key_download
+
+    - name: Check existing Microsoft GPG keyring
+      ansible.builtin.stat:
+        path: /etc/apt/keyrings/microsoft.gpg
+      register: microsoft_gpg_key
 
     - name: Convert Microsoft signing key to GPG format
       ansible.builtin.command:
-        cmd: gpg --dearmor --yes -o /etc/apt/keyrings/microsoft.gpg /tmp/microsoft.asc
-      changed_when: false
+        argv:
+          - gpg
+          - --dearmor
+          - --yes
+          - -o
+          - /etc/apt/keyrings/microsoft.gpg
+          - /tmp/microsoft.asc
+      when: microsoft_key_download.changed or
+            not (microsoft_gpg_key.stat.exists | default(false))
 
     - name: Configure Azure CLI APT repository
       ansible.builtin.apt_repository:
@@ -172,11 +185,15 @@
           - "{{ kubelogin_version.stdout }}"
           - "{{ helm_version.stdout }}"
 
-    - name: Display bootstrap completion message
-      ansible.builtin.debug:
-        msg: "Base Ansible configuration completed for {{ agent_user }}"
-
     # 5. Azure DevOps agent preparation
+
+    - name: Ensure Azure DevOps agent installation directory exists
+      ansible.builtin.file:
+        path: /opt/azdo-agent
+        state: directory
+        owner: "{{ agent_user }}"
+        group: "{{ agent_user }}"
+        mode: "0755"
 
     - name: Download Azure DevOps Linux agent
       ansible.builtin.get_url:
@@ -198,8 +215,125 @@
         path: /opt/azdo-agent/config.sh
       register: azdo_config_script
 
-    - name: Confirm agent installation files exist
+    - name: Assert Azure DevOps agent was extracted successfully
       ansible.builtin.assert:
         that:
           - azdo_config_script.stat.exists
-        fail_msg: "Azure DevOps agent installation files are missing"
+          - azdo_config_script.stat.isreg
+        fail_msg: "Azure DevOps agent config.sh was not found."
+
+    - name: Authenticate to Azure using VM managed identity
+      ansible.builtin.command:
+        argv:
+          - az
+          - login
+          - --identity
+          - --output
+          - none
+      register: azure_login
+      retries: 6
+      delay: 10
+      until: azure_login.rc == 0
+      changed_when: false
+      no_log: true
+
+    - name: Retrieve Azure DevOps registration PAT from Key Vault
+      ansible.builtin.command:
+        argv:
+          - az
+          - keyvault
+          - secret
+          - show
+          - --vault-name
+          - "{{ keyvault_name }}"
+          - --name
+          - "{{ keyvault_secret_name }}"
+          - --query
+          - value
+          - --output
+          - tsv
+          - --only-show-errors
+      register: azdo_pat_result
+      retries: 12
+      delay: 15
+      until: azdo_pat_result.rc == 0 and (azdo_pat_result.stdout | length > 0)
+      changed_when: false
+      no_log: true
+
+    # Azure DevOps agent registration
+
+    - name: Check whether Azure DevOps agent is already configured
+      ansible.builtin.stat:
+        path: /opt/azdo-agent/.agent
+      register: azdo_agent_configured
+
+    - name: Register Azure DevOps agent
+      ansible.builtin.command:
+        argv:
+          - ./config.sh
+          - --unattended
+          - --url
+          - "{{ azdo_org_url }}"
+          - --auth
+          - pat
+          - --pool
+          - "{{ azdo_agent_pool }}"
+          - --agent
+          - "{{ azdo_agent_name }}"
+          - --work
+          - _work
+          - --acceptTeeEula
+        chdir: /opt/azdo-agent
+      become: true
+      become_user: "{{ agent_user }}"
+      environment:
+        VSTS_AGENT_INPUT_TOKEN: "{{ azdo_pat_result.stdout }}"
+      when: not azdo_agent_configured.stat.exists
+      no_log: true
+
+    # Installation of the systemd service
+
+    - name: Check whether Azure DevOps agent service is installed
+      ansible.builtin.stat:
+        path: /opt/azdo-agent/.service
+      register: azdo_service_installed
+
+    - name: Install Azure DevOps agent systemd service
+      ansible.builtin.command:
+        argv:
+          - ./svc.sh
+          - install
+          - "{{ agent_user }}"
+        chdir: /opt/azdo-agent
+      when: not azdo_service_installed.stat.exists
+
+    - name: Start Azure DevOps agent systemd service
+      ansible.builtin.command:
+        argv:
+          - ./svc.sh
+          - start
+        chdir: /opt/azdo-agent
+      changed_when: false
+
+    # systemd service startup verification
+
+    - name: Read Azure DevOps agent systemd service name
+      ansible.builtin.command:
+        argv:
+          - cat
+          - /opt/azdo-agent/.service
+      register: azdo_service_name
+      changed_when: false
+
+    - name: Verify Azure DevOps agent systemd service is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ azdo_service_name.stdout | trim }}"
+      register: azdo_service_status
+      retries: 6
+      delay: 5
+      until: azdo_service_status.rc == 0 and
+             (azdo_service_status.stdout | trim) == 'active'
+      changed_when: false
