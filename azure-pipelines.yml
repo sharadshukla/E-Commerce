@@ -105,8 +105,9 @@ steps:
           --name ecommerce-acr-deployment `
           --template-file infra/main.bicep `
           --parameters `
-            acrName=ecommerceregistrynew `
-            aksAdminGroupObjectId=$aksAdminGroupObjectId
+              location=eastus `
+              acrName=ecommerceregistrynew `
+              aksAdminGroupObjectId=$aksAdminGroupObjectId
 
         if ($LASTEXITCODE -ne 0) {
             throw "Azure infrastructure deployment failed."
