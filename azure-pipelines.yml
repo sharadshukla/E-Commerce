@@ -89,14 +89,16 @@ steps:
         Write-Host "Deploying ACR and AKS using Bicep..."
 
         $aksAdminGroupObjectId = $env:AKS_ADMIN_GROUP_OBJECT_ID
-        if ([string]::IsNullOrWhiteSpace($aksAdminGroupObjectId) -or
-            $aksAdminGroupObjectId -eq '$(aksAdminGroupObjectId)') {
-            throw "Set the Azure DevOps pipeline variable 'aksAdminGroupObjectId' to the Microsoft Entra admin group object ID."
+
+        if ([string]::IsNullOrWhiteSpace($aksAdminGroupObjectId)) {
+            throw "AKS admin group object ID was not supplied."
         }
 
         if ($aksAdminGroupObjectId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
-            throw "The Azure DevOps pipeline variable 'aksAdminGroupObjectId' must be a valid GUID."
+            throw "AKS admin group object ID must be a valid GUID."
         }
+
+        Write-Host "AKS admin group object ID validation passed."
 
         az deployment group create `
           --resource-group e-commerce-app `
