@@ -2,7 +2,7 @@ trigger: none
 pr: none
 
 pool:
-  name: 'Default'
+  name: 'ecommerce-linux-pool'
 
 steps:
   # Step 1: Checkout GitHub repository
@@ -10,7 +10,7 @@ steps:
     displayName: 'Checkout E-Commerce GitHub repository'
 
   # Step 2: Check Bicep installation and validate
-  - powershell: |
+  - pwsh: |
       Write-Host "Checking Bicep installation..."
 
       az bicep version 2>$null
@@ -52,7 +52,7 @@ steps:
     displayName: 'Verify Azure authentication'
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
-      scriptType: 'ps'
+      scriptType: 'pscore'
       scriptLocation: 'inlineScript'
       inlineScript: |
         Write-Host "Checking Azure authentication..."
@@ -83,7 +83,7 @@ steps:
       AKS_ADMIN_GROUP_OBJECT_ID: $(aksAdminGroupObjectId)
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
-      scriptType: 'ps'
+      scriptType: 'pscore'
       scriptLocation: 'inlineScript'
       inlineScript: |
         Write-Host "Deploying ACR and AKS using Bicep..."
