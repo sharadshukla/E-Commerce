@@ -125,7 +125,7 @@ jobs:
         helm upgrade --install robot-shop "$(Build.SourcesDirectory)/AKS/helm" `
           --namespace "$(namespace)" `
           --set-string "image.version=$env:IMAGE_TAG" `
-          --wait=legacy `
+          --wait `
           --timeout 15m
 
         if ($LASTEXITCODE -ne 0) {
