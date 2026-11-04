@@ -24,9 +24,13 @@ Set-Location $repoRoot
 
 # Verify Git branch and commit
 $branch = (git branch --show-current).Trim()
-if ($LASTEXITCODE -ne 0 -or $branch -ne "feature/v1.3.0_agent_modernization") {
-    throw "Please switch to feature/v1.3.0_agent_modernization."
+
+if ($LASTEXITCODE -ne 0 -or
+    [string]::IsNullOrWhiteSpace($branch)) {
+    throw "Unable to determine the current Git branch."
 }
+
+Write-Host "Current Git branch: $branch"
 
 $bootstrapCommitSha = (git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {
@@ -165,12 +169,15 @@ $pwshCheck = az vm run-command invoke `
     --query "value[0].message" `
     -o tsv
 
-if ($LASTEXITCODE -ne 0 -or
-    $pwshCheck -notmatch 'PowerShell 7\.') {
-    throw "PowerShell Core verification failed."
+$pwshExitCode = $LASTEXITCODE
+$pwshOutput = $pwshCheck -join "`n"
+
+if ($pwshExitCode -ne 0 -or
+    $pwshOutput -notmatch '(?m)^PowerShell\s+\d+\.\d+') {
+    throw "PowerShell Core verification failed. Output: $pwshOutput"
 }
 
-Write-Host "PowerShell Core verified."
+Write-Host "PowerShell Core verified successfully."
 
 # Verify agent configuration and systemd service
 
