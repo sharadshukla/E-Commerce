@@ -9,7 +9,7 @@ trigger: none
 pr: none
 
 pool:
-  name: Default
+  name: ecommerce-linux-pool
 
 variables:
   resourceGroup: 'e-commerce-app'
@@ -20,7 +20,7 @@ jobs:
 - job: ValidateAKSAccess
   displayName: 'Validate AKS Access'
   steps:
-  - powershell: |
+  - pwsh: |
       if ([string]::IsNullOrWhiteSpace($env:IMAGE_TAG)) {
         throw "The imageTag parameter is required. Enter the Build.BuildId tag already published to ACR (v1.2.0 used 77)."
       }
@@ -120,7 +120,7 @@ jobs:
         }
 
         # Deploy selected image tag
-        helm upgrade --install robot-shop "$(Build.SourcesDirectory)\AKS\helm" `
+        helm upgrade --install robot-shop "$(Build.SourcesDirectory)/AKS/helm" `
           --namespace "$(namespace)" `
           --set-string "image.version=$env:IMAGE_TAG" `
           --wait=legacy `
