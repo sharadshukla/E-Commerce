@@ -35,6 +35,8 @@ jobs:
       scriptLocation: 'inlineScript'
       inlineScript: |
         $ErrorActionPreference = 'Stop'
+        Write-Host "Azure DevOps authenticated identity:"
+        az account show --query "{IdentityType:user.type,IdentityName:user.name}" -o json
 
         # Verify required tools
         foreach ($tool in @("kubectl", "kubelogin", "helm")) {
