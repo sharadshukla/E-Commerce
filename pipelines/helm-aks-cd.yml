@@ -31,7 +31,7 @@ jobs:
     displayName: 'Validate WIF, AKS and Kubernetes RBAC'
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
-      scriptType: 'ps'
+      scriptType: 'pscore'
       scriptLocation: 'inlineScript'
       inlineScript: |
         $ErrorActionPreference = 'Stop'
@@ -99,7 +99,7 @@ jobs:
       IMAGE_TAG: ${{ parameters.imageTag }}
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
-      scriptType: 'ps'
+      scriptType: 'pscore'
       scriptLocation: 'inlineScript'
       inlineScript: |
         $ErrorActionPreference = 'Stop'
