@@ -24,8 +24,8 @@ Set-Location $repoRoot
 
 # Verify Git branch and commit
 $branch = (git branch --show-current).Trim()
-if ($LASTEXITCODE -ne 0 -or $branch -ne "feature/v1.3.0-agent-modernization") {
-    throw "Please switch to feature/v1.3.0-agent-modernization."
+if ($LASTEXITCODE -ne 0 -or $branch -ne "feature/v1.3.0_agent_modernization") {
+    throw "Please switch to feature/v1.3.0_agent_modernization."
 }
 
 $bootstrapCommitSha = (git rev-parse HEAD).Trim()
