@@ -44,3 +44,14 @@ module aks './modules/aks.bicep' = if (deployAks) {
 }
 
 output aksClusterName string? = deployAks ? aks!.outputs.aksClusterName : null
+
+module acrPullRole './modules/acr-pull-role.bicep' = if (deployAcr && deployAks) {
+  name: 'aks-acr-pull-role'
+  params: {
+    acrName: acrName
+    kubeletObjectId: aks!.outputs.aksKubeletObjectId
+  }
+  dependsOn: [
+    acr
+  ]
+}

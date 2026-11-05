@@ -114,3 +114,74 @@ steps:
         }
 
         Write-Host "Azure infrastructure deployment completed successfully!"
+
+  
+  # Step 5: Bootstrap native Kubernetes RBAC
+  - task: AzureCLI@2
+    displayName: 'Bootstrap Kubernetes namespace and RBAC'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-aks-bootstrap-wif'
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        $ErrorActionPreference = 'Stop'
+
+        $env:KUBECONFIG = Join-Path $env:AGENT_TEMPDIRECTORY 'ecommerce-rbac-bootstrap-kubeconfig'
+
+        try {
+          Write-Host "Retrieving AKS user credentials..."
+
+          az aks get-credentials `
+            --resource-group e-commerce-app `
+            --name ecommerce-aks `
+            --file $env:KUBECONFIG `
+            --overwrite-existing
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to retrieve AKS credentials."
+          }
+
+          kubelogin convert-kubeconfig `
+            -l azurecli `
+            --kubeconfig $env:KUBECONFIG
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Kubeconfig conversion failed."
+          }
+
+          Write-Host "Verifying bootstrap authorization..."
+
+          $canCreateNamespaces = kubectl auth can-i create namespaces
+          if ($LASTEXITCODE -ne 0 -or "$canCreateNamespaces".Trim() -ne 'yes') {
+            throw "Bootstrap identity cannot create namespaces."
+          }
+
+          Write-Host "Applying Kubernetes namespace..."
+
+          kubectl apply -f AKS/rbac/namespace.yaml
+          if ($LASTEXITCODE -ne 0) {
+            throw "Namespace bootstrap failed."
+          }
+
+          Write-Host "Applying Helm deployer Role..."
+
+          kubectl apply -f AKS/rbac/helm-deployer-role.yaml
+          if ($LASTEXITCODE -ne 0) {
+            throw "Helm deployer Role bootstrap failed."
+          }
+
+          Write-Host "Applying Helm deployer RoleBinding..."
+
+          kubectl apply -f AKS/rbac/helm-deployer-rolebinding.yaml
+          if ($LASTEXITCODE -ne 0) {
+            throw "Helm deployer RoleBinding bootstrap failed."
+          }
+
+          Write-Host "Kubernetes RBAC bootstrap completed successfully."
+        }
+        finally {
+          if (Test-Path $env:KUBECONFIG) {
+            Remove-Item $env:KUBECONFIG -Force
+          }
+        }
+

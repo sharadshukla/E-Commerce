@@ -58,3 +58,6 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-09-01' = {
 
 output aksClusterName string = aks.name
 output aksPrincipalId string = aks.identity.principalId
+
+@description('Object ID of the AKS kubelet managed identity used to pull container images')
+output aksKubeletObjectId string = aks.properties.identityProfile.kubeletidentity.objectId
