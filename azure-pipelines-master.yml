@@ -1,0 +1,54 @@
+
+# E-Commerce v1.3.0 - Master Deployment Pipeline
+# Infrastructure -> Docker CI -> Helm CD
+
+trigger: none
+pr: none
+
+pool:
+  name: ecommerce-linux-pool
+
+variables:
+  # Azure Container Registry
+  acrName: 'ecommerceregistrynew'
+  acrLoginServer: 'ecommerceregistrynew.azurecr.io'
+
+  # Shared image tag for the complete pipeline run
+  imageTag: '$(Build.BuildId)'
+
+  # AKS configuration
+  resourceGroup: 'e-commerce-app'
+  aksCluster: 'ecommerce-aks'
+  namespace: 'robot-shop'
+
+stages:
+
+  # Stage 1 - Azure Infrastructure
+  - stage: Infrastructure
+    displayName: 'Provision Azure Infrastructure'
+    jobs:
+      - job: ProvisionInfrastructure
+        displayName: 'Provision AKS, ACR and Kubernetes RBAC'
+        steps:
+          - template: pipelines/templates/infrastructure-steps.yml
+
+  # Stage 2 - Docker CI
+  - stage: DockerCI
+    displayName: 'Build and Publish Docker Images'
+    dependsOn: Infrastructure
+    condition: succeeded()
+    jobs:
+      - job: BuildAndPushImages
+        displayName: 'Build and Push Robot Shop Images'
+        steps:
+          - template: pipelines/templates/docker-acr-steps.yml
+
+  # Stage 3 - Helm CD
+  - stage: HelmCD
+    displayName: 'Deploy Robot Shop to AKS'
+    dependsOn: DockerCI
+    condition: succeeded()
+    jobs:
+      - template: pipelines/templates/helm-aks-jobs.yml
+        parameters:
+          imageTag: '$(Build.BuildId)'

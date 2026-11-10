@@ -1,0 +1,187 @@
+trigger: none
+pr: none
+
+pool:
+  name: 'ecommerce-linux-pool'
+
+steps:
+  # Step 1: Checkout GitHub repository
+  - checkout: self
+    displayName: 'Checkout E-Commerce GitHub repository'
+
+  # Step 2: Check Bicep installation and validate
+  - pwsh: |
+      Write-Host "Checking Bicep installation..."
+
+      az bicep version 2>$null
+
+      if ($LASTEXITCODE -ne 0) {
+          Write-Host "Bicep is not installed. Installing now..."
+
+          az bicep install
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Bicep installation failed."
+          }
+      }
+      else {
+          Write-Host "Bicep is already installed. Skipping installation."
+      }
+
+      Write-Host "Bicep version:"
+      az bicep version
+
+      if ($LASTEXITCODE -ne 0) {
+          throw "Bicep is still unavailable."
+      }
+
+      Write-Host "Validating Bicep template..."
+      az bicep build --file infra/main.bicep --stdout | Out-Null
+      $buildExitCode = $LASTEXITCODE
+
+      if ($buildExitCode -ne 0) {
+          throw "Bicep validation failed."
+      }
+
+      Write-Host "Bicep validation successful!"
+
+    displayName: 'Check Bicep installation and validate'
+
+  # Step 3: Authenticate to Azure using Workload Identity Federation
+  - task: AzureCLI@2
+    displayName: 'Verify Azure authentication'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        Write-Host "Checking Azure authentication..."
+
+        az account show --output table
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Azure authentication failed."
+        }
+
+        Write-Host "Checking resource group access..."
+
+        az group show `
+          --name e-commerce-app `
+          --query "{Name:name, Location:location}" `
+          --output table
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Resource group access failed."
+        }
+
+        Write-Host "Azure authentication verified successfully!"
+
+  # Step 4: Deploy Azure Infrastructure using Bicep
+  - task: AzureCLI@2
+    displayName: 'Deploy Azure Infrastructure (ACR + AKS)'
+    env:
+      AKS_ADMIN_GROUP_OBJECT_ID: $(aksAdminGroupObjectId)
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-wif'
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        Write-Host "Deploying ACR and AKS using Bicep..."
+
+        $aksAdminGroupObjectId = $env:AKS_ADMIN_GROUP_OBJECT_ID
+
+        if ([string]::IsNullOrWhiteSpace($aksAdminGroupObjectId)) {
+            throw "AKS admin group object ID was not supplied."
+        }
+
+        if ($aksAdminGroupObjectId -notmatch '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$') {
+            throw "AKS admin group object ID must be a valid GUID."
+        }
+
+        Write-Host "AKS admin group object ID validation passed."
+
+        az deployment group create `
+          --resource-group e-commerce-app `
+          --name ecommerce-acr-deployment `
+          --template-file infra/main.bicep `
+          --parameters `
+              location=eastus `
+              acrName=ecommerceregistrynew `
+              aksAdminGroupObjectId=$aksAdminGroupObjectId
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Azure infrastructure deployment failed."
+        }
+
+        Write-Host "Azure infrastructure deployment completed successfully!"
+
+  
+  # Step 5: Bootstrap native Kubernetes RBAC
+  - task: AzureCLI@2
+    displayName: 'Bootstrap Kubernetes namespace and RBAC'
+    inputs:
+      azureSubscription: 'sc-az-ecommerce-aks-bootstrap-wif'
+      scriptType: 'pscore'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        $ErrorActionPreference = 'Stop'
+
+        $env:KUBECONFIG = Join-Path $env:AGENT_TEMPDIRECTORY 'ecommerce-rbac-bootstrap-kubeconfig'
+
+        try {
+          Write-Host "Retrieving AKS user credentials..."
+
+          az aks get-credentials `
+            --resource-group e-commerce-app `
+            --name ecommerce-aks `
+            --file $env:KUBECONFIG `
+            --overwrite-existing
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to retrieve AKS credentials."
+          }
+
+          kubelogin convert-kubeconfig `
+            -l azurecli `
+            --kubeconfig $env:KUBECONFIG
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Kubeconfig conversion failed."
+          }
+
+          Write-Host "Verifying bootstrap authorization..."
+
+          $canCreateNamespaces = kubectl auth can-i create namespaces
+          if ($LASTEXITCODE -ne 0 -or "$canCreateNamespaces".Trim() -ne 'yes') {
+            throw "Bootstrap identity cannot create namespaces."
+          }
+
+          Write-Host "Applying Kubernetes namespace..."
+
+          kubectl apply -f AKS/rbac/namespace.yaml
+          if ($LASTEXITCODE -ne 0) {
+            throw "Namespace bootstrap failed."
+          }
+
+          Write-Host "Applying Helm deployer Role..."
+
+          kubectl apply -f AKS/rbac/helm-deployer-role.yaml
+          if ($LASTEXITCODE -ne 0) {
+            throw "Helm deployer Role bootstrap failed."
+          }
+
+          Write-Host "Applying Helm deployer RoleBinding..."
+
+          kubectl apply -f AKS/rbac/helm-deployer-rolebinding.yaml
+          if ($LASTEXITCODE -ne 0) {
+            throw "Helm deployer RoleBinding bootstrap failed."
+          }
+
+          Write-Host "Kubernetes RBAC bootstrap completed successfully."
+        }
+        finally {
+          if (Test-Path $env:KUBECONFIG) {
+            Remove-Item $env:KUBECONFIG -Force
+          }
+        }
+
