@@ -46,6 +46,19 @@ if (($remoteHead -split '\s+')[0] -ne $bootstrapCommitSha) {
     throw "Local HEAD differs from GitHub branch HEAD. Push the intended commit first."
 }
 
+# Verify Git working directory is clean
+$workingTreeChanges = @(git status --porcelain --untracked-files=normal)
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to check Git working-tree status."
+}
+
+if ($workingTreeChanges.Count -gt 0) {
+    throw "Git working directory contains uncommitted or untracked changes. Commit and push the intended changes first."
+}
+
+Write-Host "Git working directory is clean."
+
 # Retrieve existing Azure resources
 $keyVaultName = (az keyvault list `
     --resource-group $keyVaultResourceGroup `
