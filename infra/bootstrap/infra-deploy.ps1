@@ -386,17 +386,33 @@ if ($pwshExitCode -ne 0 -or
 Write-Host "PowerShell Core verified successfully."
 
 # Verify agent configuration and systemd service
+$agentCheckScript = @'
+set -eu
+
+test -f /opt/azdo-agent/.agent
+test -f /opt/azdo-agent/.service
+
+service_name=$(cat /opt/azdo-agent/.service)
+
+systemctl is-active --quiet "$service_name"
+
+echo "AGENT_SERVICE_ACTIVE"
+'@
 
 $agentCheck = az vm run-command invoke `
     --resource-group $resourceGroup `
     --name ecommerce-agent-vm `
     --command-id RunShellScript `
-    --scripts "test -f /opt/azdo-agent/.agent && test -f /opt/azdo-agent/.service && systemctl is-active `$(cat /opt/azdo-agent/.service)" `
+    --scripts $agentCheckScript `
     --query "value[0].message" `
     -o tsv
 
-if ($LASTEXITCODE -ne 0 -or $agentCheck -notmatch '(?m)^active\s*$') {
-    throw "Azure DevOps agent configuration or systemd service verification failed."
+$agentCheckExitCode = $LASTEXITCODE
+$agentCheckOutput = $agentCheck -join "`n"
+
+if ($agentCheckExitCode -ne 0 -or
+    $agentCheckOutput -notmatch '(?m)^AGENT_SERVICE_ACTIVE\s*$') {
+    throw "Azure DevOps agent configuration or systemd service verification failed. Output: $agentCheckOutput"
 }
 
 Write-Host "Azure DevOps agent service is active."

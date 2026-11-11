@@ -1,15 +1,4 @@
 
-trigger: none
-pr: none
-
-pool:
-  name: ecommerce-linux-pool
-
-variables:
-  acrName: 'ecommerceregistrynew'
-  acrLoginServer: 'ecommerceregistrynew.azurecr.io'
-  imageTag: '$(Build.BuildId)'
-
 steps:
   - pwsh: |
       $ErrorActionPreference = 'Stop'
