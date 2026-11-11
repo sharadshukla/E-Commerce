@@ -125,4 +125,48 @@ jobs:
             throw "Helm release status check failed."
           }
 
+          # ------------------------------------------------------------
+          # Verify Robot Shop Kubernetes workload readiness
+          # ------------------------------------------------------------
+          # Confirm that all Deployments and StatefulSets belonging
+          # to the Robot Shop Helm release have successfully rolled out.
+          # A failed rollout causes the master pipeline to fail.
+          # ------------------------------------------------------------
+
+          $namespace = "$(namespace)"
+
+          Write-Host "Verifying Robot Shop workload readiness..."
+
+          $workloads = @(
+              kubectl get deployments,statefulsets `
+                  --namespace $namespace `
+                  -o name
+          )
+
+          if ($LASTEXITCODE -ne 0 -or $workloads.Count -eq 0) {
+              throw "No Kubernetes workloads found or workload query failed."
+          }
+
+          foreach ($workload in $workloads) {
+              Write-Host "Checking rollout: $workload"
+
+              kubectl rollout status $workload `
+                  --namespace $namespace `
+                  --timeout=180s
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Workload rollout verification failed: $workload"
+              }
+          }
+
+          Write-Host "Robot Shop workload readiness verified."
+
+          kubectl get pods --namespace $namespace
+          kubectl get services --namespace $namespace
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to retrieve Robot Shop service information."
+          }
+
+
           Write-Host "Robot Shop Helm deployment completed successfully."
