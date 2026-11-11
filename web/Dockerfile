@@ -9,7 +9,8 @@ ENV CATALOGUE_HOST=catalogue \
     PAYMENT_HOST=payment \
     RATINGS_HOST=ratings 
 
-COPY entrypoint.sh /root/
+# Copy the startup script with executable permissions
+COPY --chmod=755 entrypoint.sh /root/
 ENTRYPOINT ["/root/entrypoint.sh"]
 
 COPY default.conf.template /etc/nginx/conf.d/default.conf.template
