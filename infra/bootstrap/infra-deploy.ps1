@@ -385,34 +385,61 @@ if ($pwshExitCode -ne 0 -or
 
 Write-Host "PowerShell Core verified successfully."
 
+
 # Verify agent configuration and systemd service
 $agentCheckScript = @'
+#!/bin/bash
 set -eu
 
 test -f /opt/azdo-agent/.agent
 test -f /opt/azdo-agent/.service
 
 service_name=$(cat /opt/azdo-agent/.service)
-
 systemctl is-active --quiet "$service_name"
 
 echo "AGENT_SERVICE_ACTIVE"
 '@
 
-$agentCheck = az vm run-command invoke `
-    --resource-group $resourceGroup `
-    --name ecommerce-agent-vm `
-    --command-id RunShellScript `
-    --scripts $agentCheckScript `
-    --query "value[0].message" `
-    -o tsv
+# Pass the multiline shell script to Azure CLI through a temporary file.
+$agentCheckFile = Join-Path ([System.IO.Path]::GetTempPath()) `
+    "ecommerce-agent-check-$([guid]::NewGuid().ToString('N')).sh"
 
-$agentCheckExitCode = $LASTEXITCODE
-$agentCheckOutput = $agentCheck -join "`n"
+try {
+    # Write UTF-8 without BOM for Linux shell compatibility.
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText(
+        $agentCheckFile,
+        ($agentCheckScript -replace "`r`n", "`n"),
+        $utf8NoBom
+    )
 
-if ($agentCheckExitCode -ne 0 -or
-    $agentCheckOutput -notmatch '(?m)^AGENT_SERVICE_ACTIVE\s*$') {
-    throw "Azure DevOps agent configuration or systemd service verification failed. Output: $agentCheckOutput"
+    $agentCheckJson = az vm run-command invoke `
+        --resource-group $resourceGroup `
+        --name ecommerce-agent-vm `
+        --command-id RunShellScript `
+        --scripts "@$agentCheckFile" `
+        --output json
+
+    $agentCheckExitCode = $LASTEXITCODE
+}
+finally {
+    Remove-Item -LiteralPath $agentCheckFile `
+        -Force -ErrorAction SilentlyContinue
+}
+
+if ($agentCheckExitCode -ne 0) {
+    throw "Azure VM Run Command failed. Azure CLI exit code: $agentCheckExitCode"
+}
+
+$agentCheckResponse = (
+    $agentCheckJson -join "`n"
+) | ConvertFrom-Json
+
+$agentCheckStatus = $agentCheckResponse.value[0]
+
+if ($agentCheckStatus.code -ne "ProvisioningState/succeeded" -or
+    $agentCheckStatus.message -notmatch "AGENT_SERVICE_ACTIVE") {
+    throw "Azure DevOps agent configuration or systemd service verification failed. Status: $($agentCheckStatus.code). Output: $($agentCheckStatus.message)"
 }
 
 Write-Host "Azure DevOps agent service is active."
