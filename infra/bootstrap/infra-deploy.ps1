@@ -22,7 +22,7 @@ $sshKeyFile = Join-Path $HOME ".ssh/ecommerce-agent.pub"
 
 Set-Location $repoRoot
 
-# Azure DevOps API - Agent Availability Verification
+# Azure DevOps CLI - Agent Availability Verification
 function Wait-AzureDevOpsAgentOnline {
     param(
         [string]$Organization = 'sharadshukla19',
@@ -32,30 +32,42 @@ function Wait-AzureDevOpsAgentOnline {
         [int]$DelaySeconds = 10
     )
 
-    $token = az account get-access-token `
-        --resource '499b84ac-1321-427f-aa17-267ca6975798' `
-        --query accessToken -o tsv
+    $orgUrl = "https://dev.azure.com/$Organization"
 
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) {
-        throw 'Failed to acquire Azure DevOps access token.'
+    # Discover the agent pool through Azure DevOps CLI.
+    $poolJson = az pipelines pool list `
+        --organization $orgUrl `
+        --query "[?name=='$PoolName']" `
+        -o json
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to query Azure DevOps agent pools."
     }
 
-    $headers = @{ Authorization = "Bearer $token" }
-
-    $poolUri = "https://dev.azure.com/$Organization/_apis/distributedtask/pools?poolName=$PoolName&api-version=7.1"
-    $pools = Invoke-RestMethod -Uri $poolUri -Headers $headers -Method Get
-
-    $pool = @($pools.value | Where-Object { $_.name -eq $PoolName }) | Select-Object -First 1
+    $pools = @($poolJson | ConvertFrom-Json)
+    $pool = $pools | Select-Object -First 1
 
     if (-not $pool) {
         throw "Azure DevOps agent pool '$PoolName' not found."
     }
 
+    # Poll until the agent is online and enabled.
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
-        $agentsUri = "https://dev.azure.com/$Organization/_apis/distributedtask/pools/$($pool.id)/agents?agentName=$AgentName&api-version=7.1"
-        $agents = Invoke-RestMethod -Uri $agentsUri -Headers $headers -Method Get
 
-        $agent = @($agents.value | Where-Object { $_.name -eq $AgentName }) | Select-Object -First 1
+        $agentJson = az pipelines agent list `
+            --organization $orgUrl `
+            --pool-id $pool.id `
+            --agent-name $AgentName `
+            -o json
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to query Azure DevOps agents."
+        }
+
+        $agents = @($agentJson | ConvertFrom-Json)
+        $agent = $agents |
+            Where-Object { $_.name -eq $AgentName } |
+            Select-Object -First 1
 
         if ($agent -and $agent.status -eq 'online' -and $agent.enabled) {
             Write-Host "Azure DevOps agent '$AgentName' is Online."
@@ -69,7 +81,8 @@ function Wait-AzureDevOpsAgentOnline {
     throw "Azure DevOps agent '$AgentName' did not become Online."
 }
 
-# Azure DevOps API - Master Pipeline Orchestration
+
+# Azure DevOps CLI - Master Pipeline Orchestration
 function Invoke-EcommerceMasterPipeline {
     param(
         [Parameter(Mandatory)]
@@ -81,33 +94,34 @@ function Invoke-EcommerceMasterPipeline {
         [switch]$PreviewOnly
     )
 
-    $organization = 'sharadshukla19'
+    $organization = 'https://dev.azure.com/sharadshukla19'
     $project = 'e-commerce-app'
     $pipelineName = 'ecommerce-master-deployment'
 
-    # Obtain Microsoft Entra access token for Azure DevOps
-    $token = az account get-access-token `
-        --resource '499b84ac-1321-427f-aa17-267ca6975798' `
-        --query accessToken -o tsv
-
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) {
-        throw "Failed to obtain Azure DevOps access token."
+    # The standard CLI run command does not provide a YAML preview.
+    if ($PreviewOnly) {
+        throw "PreviewOnly is not supported by this CLI-based function. No pipeline was queued."
     }
 
-    $headers = @{
-        Authorization = "Bearer $token"
+    if ($CommitSha -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "Invalid Git commit SHA: expected 40 hexadecimal characters."
     }
 
-    # Locate the registered master pipeline
-    $baseUri = "https://dev.azure.com/$organization/$project/_apis"
+    # Locate the registered master pipeline.
+    $pipelineJson = az pipelines list `
+        --organization $organization `
+        --project $project `
+        --name $pipelineName `
+        -o json
 
-    $pipelines = Invoke-RestMethod `
-        -Uri "$baseUri/pipelines?api-version=7.1" `
-        -Headers $headers `
-        -Method Get
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to query Azure DevOps pipelines."
+    }
+
+    $pipelines = @(($pipelineJson -join "`n") | ConvertFrom-Json)
 
     $matches = @(
-        $pipelines.value | Where-Object {
+        $pipelines | Where-Object {
             $_.name -eq $pipelineName
         }
     )
@@ -119,50 +133,42 @@ function Invoke-EcommerceMasterPipeline {
     $pipelineId = $matches[0].id
 
     Write-Host "Master pipeline found: $pipelineName (ID: $pipelineId)"
+    Write-Host "Target branch: $Branch"
+    Write-Host "Target commit: $CommitSha"
 
-    # Pin pipeline execution to the verified Git revision
-    $requestBody = @{
-        previewRun = [bool]$PreviewOnly
-        resources = @{
-            repositories = @{
-                self = @{
-                    refName = "refs/heads/$Branch"
-                    version = $CommitSha
-                }
-            }
-        }
-    } | ConvertTo-Json -Depth 10
+    # Queue the pipeline at the explicitly verified Git revision.
+    $runJson = az pipelines run `
+        --organization $organization `
+        --project $project `
+        --id $pipelineId `
+        --branch "refs/heads/$Branch" `
+        --commit-id $CommitSha `
+        -o json
 
-    $uri = "$baseUri/pipelines/$pipelineId/runs?api-version=7.1"
-
-    $headers['Content-Type'] = 'application/json'
-
-    $result = Invoke-RestMethod `
-        -Uri $uri `
-        -Headers $headers `
-        -Method Post `
-        -Body $requestBody
-
-    if ($PreviewOnly) {
-        if ([string]::IsNullOrWhiteSpace($result.finalYaml)) {
-            throw "Azure DevOps preview did not return expanded YAML."
-        }
-
-        Write-Host "Master pipeline YAML preview succeeded."
-        return
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to queue the master pipeline."
     }
+
+    $result = ($runJson -join "`n") | ConvertFrom-Json
 
     if (-not $result.id) {
         throw "Azure DevOps did not return a pipeline run ID."
     }
 
+    # Verify the revision reported for the queued run.
+    if ($result.sourceVersion -and
+        $result.sourceVersion -ne $CommitSha) {
+        throw "Queued pipeline revision does not match the requested commit. Run ID: $($result.id). Inspect or cancel this run."
+    }
+
     Write-Host "Master pipeline queued successfully."
     Write-Host "Run ID: $($result.id)"
 
-    return $result.id
+    return [int]$result.id
 }
 
-# Azure DevOps API - Master Pipeline Run Monitoring
+# Azure DevOps CLI - Master Pipeline Run Monitoring
+
 function Wait-EcommerceMasterPipeline {
     param(
         [Parameter(Mandatory)]
@@ -172,31 +178,28 @@ function Wait-EcommerceMasterPipeline {
         [int]$PollSeconds = 20
     )
 
-    $organization = 'sharadshukla19'
+    $organization = 'https://dev.azure.com/sharadshukla19'
     $project = 'e-commerce-app'
-
-    $token = az account get-access-token `
-        --resource '499b84ac-1321-427f-aa17-267ca6975798' `
-        --query accessToken -o tsv
-
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) {
-        throw "Failed to obtain Azure DevOps access token."
-    }
-
-    $headers = @{
-        Authorization = "Bearer $token"
-    }
-
-    $uri = "https://dev.azure.com/$organization/$project/_apis/build/builds/$RunId?api-version=7.1"
 
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
 
     while ((Get-Date) -lt $deadline) {
 
-        $run = Invoke-RestMethod `
-            -Uri $uri `
-            -Headers $headers `
-            -Method Get
+        $runJson = az pipelines runs show `
+            --organization $organization `
+            --project $project `
+            --id $RunId `
+            -o json
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to retrieve master pipeline run $RunId."
+        }
+
+        $run = ($runJson -join "`n") | ConvertFrom-Json
+
+        if (-not $run -or -not $run.status) {
+            throw "Invalid response for master pipeline run $RunId."
+        }
 
         Write-Host "Master pipeline run $RunId - Status: $($run.status), Result: $($run.result)"
 
