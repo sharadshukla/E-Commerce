@@ -461,3 +461,103 @@ $masterRunId = Invoke-EcommerceMasterPipeline `
 Write-Host "Monitoring E-Commerce master pipeline..."
 
 Wait-EcommerceMasterPipeline -RunId $masterRunId
+
+
+# Post-deployment: discover and display the Robot Shop URL.
+# URL discovery is informational and must not invalidate
+# an otherwise successful master pipeline deployment.
+
+Write-Host "`n===============================================" -ForegroundColor Green
+Write-Host " E-Commerce v1.3.0 - Deployment Successful!" -ForegroundColor Green
+Write-Host "===============================================" -ForegroundColor Green
+
+Write-Host "`nApplication endpoint discovery:"
+Write-Host "  Prerequisites: kubectl, kubelogin and Azure CLI."
+Write-Host "  Your signed-in Azure identity must have AKS access."
+Write-Host "  These are not required to open the public URL."
+
+$tempKubeconfig = Join-Path ([System.IO.Path]::GetTempPath()) `
+    "ecommerce-kubeconfig-$([guid]::NewGuid().ToString('N'))"
+
+try {
+    foreach ($tool in @('kubectl', 'kubelogin')) {
+        if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+            throw "$tool is not installed or is unavailable in PATH."
+        }
+    }
+
+    # Use an isolated kubeconfig without modifying the user's default.
+    az aks get-credentials `
+        --resource-group e-commerce-app `
+        --name ecommerce-aks `
+        --file $tempKubeconfig `
+        --overwrite-existing `
+        --only-show-errors | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to retrieve AKS credentials."
+    }
+
+    kubelogin convert-kubeconfig `
+        -l azurecli `
+        --kubeconfig $tempKubeconfig
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Kubeconfig authentication conversion failed."
+    }
+
+    $serviceJson = kubectl `
+        --kubeconfig $tempKubeconfig `
+        --namespace robot-shop `
+        get service web `
+        --output json
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to query Robot Shop web service."
+    }
+
+    $service = ($serviceJson -join "`n") | ConvertFrom-Json
+
+    if ($service.spec.type -ne 'LoadBalancer') {
+        throw "Robot Shop web service is not a LoadBalancer."
+    }
+
+    $ingress = $service.status.loadBalancer.ingress |
+        Select-Object -First 1
+
+    $endpoint = if ($ingress.ip) {
+        $ingress.ip
+    } else {
+        $ingress.hostname
+    }
+
+    $port = $service.spec.ports |
+        Select-Object -First 1 -ExpandProperty port
+
+    if ([string]::IsNullOrWhiteSpace($endpoint) -or -not $port) {
+        throw "LoadBalancer endpoint is not yet available."
+    }
+
+    $applicationUrl = "http://${endpoint}:${port}"
+
+    Write-Host "`n-----------------------------------------------" -ForegroundColor Green
+    Write-Host " ROBOT SHOP APPLICATION" -ForegroundColor Green
+    Write-Host "-----------------------------------------------"
+    Write-Host "Please click the link below to launch the application:"
+    Write-Host ""
+    Write-Host $applicationUrl -ForegroundColor Cyan
+    Write-Host "-----------------------------------------------"
+}
+catch {
+    Write-Warning "Deployment succeeded, but automatic URL discovery failed."
+    Write-Warning $_.Exception.Message
+    Write-Host "After configuring AKS access, use:"
+    Write-Host "  kubectl get svc web -n robot-shop"
+    Write-Host "Use the EXTERNAL-IP and service PORT to open Robot Shop."
+}
+finally {
+    if (Test-Path -LiteralPath $tempKubeconfig) {
+        Remove-Item -LiteralPath $tempKubeconfig `
+            -Force -ErrorAction SilentlyContinue
+    }
+}
