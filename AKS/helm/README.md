@@ -43,7 +43,7 @@ The published release history and the broader Azure platform evolution are summa
 - The ten application images listed below, published to ACR with a common tag.
 - The AKS **kubelet managed identity** granted the `AcrPull` role on the registry.
 - A Kubernetes StorageClass named `default` for the Redis PVC. The chart currently names this StorageClass directly in its Redis StatefulSet template.
-- Outbound access from AKS nodes to Docker Hub for `redis:4.0.6` and other upstream images used by the chart.
+- Outbound access from AKS nodes to Docker Hub for `redis:4.0.6`, `rabbitmq:3.7-management-alpine` and any other upstream images used by the chart.
 
 Check cluster connectivity and StorageClasses:
 
