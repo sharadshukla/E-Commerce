@@ -104,7 +104,7 @@ The master pipeline is defined in [`azure-pipelines-master.yml`](azure-pipelines
 
 ## Identity and access
 
-The diagram below follows the identities configured for v1.3.0. It intentionally does not show pod-level Azure Workload Identity or a user-assigned VM identity: neither is configured here.
+The Mermaid diagram summarizes the identity flow implemented in v1.3.0. The companion diagram below expands it by phase: solid paths show implemented access, while the dashed pod-level Azure Workload Identity path is future scope and is not configured. The temporary agent VM uses a system-assigned managed identity; no user-assigned identity is configured for the VM.
 
 ```mermaid
 flowchart TD
@@ -134,6 +134,8 @@ flowchart TD
     Kubelet -->|"AcrPull"| ACR
     API --> App
 ```
+
+![Azure DevOps and AKS identity phases, access boundaries, and future pod identity scope](docs/images/azure-identity-flow-v1.3.0.png)
 
 | Identity or control | Purpose in this deployment |
 |---|---|
