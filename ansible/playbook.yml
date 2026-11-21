@@ -1,0 +1,366 @@
+
+---
+- name: Configure Azure DevOps Linux build agent
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    agent_user: azureagent
+    agent_home: /home/azureagent
+    agent_workdir: /opt/ecommerce-agent
+    azdo_agent_version: "4.261.0"
+    azdo_agent_arch: "linux-x64"
+    azdo_agent_archive: "vsts-agent-{{ azdo_agent_arch }}-{{ azdo_agent_version }}.tar.gz"
+    azdo_agent_url: "https://download.agent.dev.azure.com/agent/{{ azdo_agent_version }}/{{ azdo_agent_archive }}"
+
+  tasks:
+    - name: Ensure agent working directory exists
+      ansible.builtin.file:
+        path: "{{ agent_workdir }}"
+        state: directory
+        owner: "{{ agent_user }}"
+        group: "{{ agent_user }}"
+        mode: "0755"
+
+    - name: Install common build dependencies
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-apt
+          - git
+          - curl
+          - ca-certificates
+          - gnupg
+          - unzip
+          - jq
+        state: present
+        update_cache: true
+
+    - name: Verify bootstrap user exists
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ agent_user }}"
+
+    # Docker installation
+
+    - name: Create Docker APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Docker repository signing key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Configure Docker APT repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/ubuntu
+          noble stable
+        filename: docker
+        state: present
+
+    - name: Install Docker Engine and build plugins
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Enable and start Docker service
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Add Azure DevOps agent user to Docker group
+      ansible.builtin.user:
+        name: "{{ agent_user }}"
+        groups: docker
+        append: true
+
+    
+    # Azure CLI installation
+
+    - name: Download Microsoft package signing key
+      ansible.builtin.get_url:
+        url: https://packages.microsoft.com/keys/microsoft.asc
+        dest: /tmp/microsoft.asc
+        mode: "0644"
+      register: microsoft_key_download
+
+    - name: Check existing Microsoft GPG keyring
+      ansible.builtin.stat:
+        path: /etc/apt/keyrings/microsoft.gpg
+      register: microsoft_gpg_key
+
+    - name: Convert Microsoft signing key to GPG format
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --dearmor
+          - --yes
+          - -o
+          - /etc/apt/keyrings/microsoft.gpg
+          - /tmp/microsoft.asc
+      when: microsoft_key_download.changed or
+            not (microsoft_gpg_key.stat.exists | default(false))
+
+    - name: Configure Azure CLI APT repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg]
+          https://packages.microsoft.com/repos/azure-cli/
+          noble main
+        filename: azure-cli
+        state: present
+
+    - name: Install Azure CLI
+      ansible.builtin.apt:
+        name: azure-cli
+        state: present
+        update_cache: true
+
+    - name: Verify Azure CLI installation
+      ansible.builtin.command:
+        cmd: az version
+      register: azure_cli_version
+      changed_when: false
+
+    - name: Display Azure CLI version
+      ansible.builtin.debug:
+        var: azure_cli_version.stdout
+
+    # PowerShell Core installation
+
+    - name: Configure Microsoft PowerShell APT repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg]
+          https://packages.microsoft.com/ubuntu/24.04/prod
+          noble main
+        filename: microsoft-powershell
+        state: present
+
+    - name: Install PowerShell Core
+      ansible.builtin.apt:
+        name: powershell
+        state: present
+        update_cache: true
+
+    - name: Verify PowerShell installation
+      ansible.builtin.command:
+        cmd: pwsh --version
+      register: powershell_version
+      changed_when: false
+
+    - name: Display PowerShell version
+      ansible.builtin.debug:
+        var: powershell_version.stdout
+    
+    # Kubernetes and Helm tooling
+
+    - name: Install kubectl and kubelogin for AKS
+      ansible.builtin.command:
+        cmd: az aks install-cli --install-location /usr/local/bin/kubectl --kubelogin-install-location /usr/local/bin/kubelogin
+      args:
+        creates: /usr/local/bin/kubelogin
+
+    - name: Download official Helm installation script
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: /tmp/get-helm-3
+        mode: "0755"
+
+    - name: Install Helm
+      ansible.builtin.command:
+        cmd: /tmp/get-helm-3
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Verify kubectl installation
+      ansible.builtin.command:
+        cmd: kubectl version --client
+      register: kubectl_version
+      changed_when: false
+
+    - name: Verify kubelogin installation
+      ansible.builtin.command:
+        cmd: kubelogin --version
+      register: kubelogin_version
+      changed_when: false
+
+    - name: Verify Helm installation
+      ansible.builtin.command:
+        cmd: helm version --short
+      register: helm_version
+      changed_when: false
+
+    - name: Display Kubernetes tooling versions
+      ansible.builtin.debug:
+        msg:
+          - "{{ kubectl_version.stdout }}"
+          - "{{ kubelogin_version.stdout }}"
+          - "{{ helm_version.stdout }}"
+
+    # 5. Azure DevOps agent preparation
+
+    - name: Ensure Azure DevOps agent installation directory exists
+      ansible.builtin.file:
+        path: /opt/azdo-agent
+        state: directory
+        owner: "{{ agent_user }}"
+        group: "{{ agent_user }}"
+        mode: "0755"
+
+    - name: Download Azure DevOps Linux agent
+      ansible.builtin.get_url:
+        url: "{{ azdo_agent_url }}"
+        dest: "/tmp/{{ azdo_agent_archive }}"
+        mode: "0644"
+
+    - name: Extract Azure DevOps agent
+      ansible.builtin.unarchive:
+        src: "/tmp/{{ azdo_agent_archive }}"
+        dest: /opt/azdo-agent
+        remote_src: true
+        owner: "{{ agent_user }}"
+        group: "{{ agent_user }}"
+        creates: /opt/azdo-agent/config.sh
+
+    - name: Verify Azure DevOps agent configuration script
+      ansible.builtin.stat:
+        path: /opt/azdo-agent/config.sh
+      register: azdo_config_script
+
+    - name: Assert Azure DevOps agent was extracted successfully
+      ansible.builtin.assert:
+        that:
+          - azdo_config_script.stat.exists
+          - azdo_config_script.stat.isreg
+        fail_msg: "Azure DevOps agent config.sh was not found."
+
+    - name: Authenticate to Azure using VM managed identity
+      ansible.builtin.command:
+        argv:
+          - az
+          - login
+          - --identity
+          - --output
+          - none
+      register: azure_login
+      retries: 6
+      delay: 10
+      until: azure_login.rc == 0
+      changed_when: false
+      no_log: true
+
+    - name: Retrieve Azure DevOps registration PAT from Key Vault
+      ansible.builtin.command:
+        argv:
+          - az
+          - keyvault
+          - secret
+          - show
+          - --vault-name
+          - "{{ keyvault_name }}"
+          - --name
+          - "{{ keyvault_secret_name }}"
+          - --query
+          - value
+          - --output
+          - tsv
+          - --only-show-errors
+      register: azdo_pat_result
+      retries: 12
+      delay: 15
+      until: azdo_pat_result.rc == 0 and (azdo_pat_result.stdout | length > 0)
+      changed_when: false
+      no_log: true
+
+    # Azure DevOps agent registration
+
+    - name: Check whether Azure DevOps agent is already configured
+      ansible.builtin.stat:
+        path: /opt/azdo-agent/.agent
+      register: azdo_agent_configured
+
+    - name: Register Azure DevOps agent
+      ansible.builtin.command:
+        argv:
+          - ./config.sh
+          - --unattended
+          - --url
+          - "{{ azdo_org_url }}"
+          - --auth
+          - pat
+          - --pool
+          - "{{ azdo_agent_pool }}"
+          - --agent
+          - "{{ azdo_agent_name }}"
+          - --work
+          - _work
+          - --acceptTeeEula
+        chdir: /opt/azdo-agent
+      become: true
+      become_user: "{{ agent_user }}"
+      environment:
+        VSTS_AGENT_INPUT_TOKEN: "{{ azdo_pat_result.stdout }}"
+      when: not azdo_agent_configured.stat.exists
+      no_log: true
+
+    # Installation of the systemd service
+
+    - name: Check whether Azure DevOps agent service is installed
+      ansible.builtin.stat:
+        path: /opt/azdo-agent/.service
+      register: azdo_service_installed
+
+    - name: Install Azure DevOps agent systemd service
+      ansible.builtin.command:
+        argv:
+          - ./svc.sh
+          - install
+          - "{{ agent_user }}"
+        chdir: /opt/azdo-agent
+      when: not azdo_service_installed.stat.exists
+
+    - name: Start Azure DevOps agent systemd service
+      ansible.builtin.command:
+        argv:
+          - ./svc.sh
+          - start
+        chdir: /opt/azdo-agent
+      changed_when: false
+
+    # systemd service startup verification
+
+    - name: Read Azure DevOps agent systemd service name
+      ansible.builtin.command:
+        argv:
+          - cat
+          - /opt/azdo-agent/.service
+      register: azdo_service_name
+      changed_when: false
+
+    - name: Verify Azure DevOps agent systemd service is active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - "{{ azdo_service_name.stdout | trim }}"
+      register: azdo_service_status
+      retries: 6
+      delay: 5
+      until: azdo_service_status.rc == 0 and
+             (azdo_service_status.stdout | trim) == 'active'
+      changed_when: false
