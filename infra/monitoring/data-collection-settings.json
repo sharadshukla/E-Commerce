@@ -1,0 +1,16 @@
+
+{
+  "interval": "5m",
+  "namespaceFilteringMode": "Exclude",
+  "namespaces": [
+    "kube-system",
+    "gatekeeper-system",
+    "azure-arc"
+  ],
+  "enableContainerLogV2": true,
+  "streams": [
+    "Microsoft-ContainerLogV2",
+    "Microsoft-KubeEvents",
+    "Microsoft-KubePodInventory"
+  ]
+}

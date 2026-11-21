@@ -13,6 +13,7 @@ $bootstrapRg = 'ecommerce-bootstrap-rg'
 $securityRg = 'ecommerce-security-rg'
 $aksName = 'ecommerce-aks'
 $acrName = 'ecommerceregistrynew'
+$logAnalyticsName = 'law-ecommerce-aks'
 $vmName = 'ecommerce-agent-vm'
 $keyVaultName = 'kv-ecommerce-agent-26641'
 $secretName = 'azdo-agent-registration-pat'
@@ -62,6 +63,13 @@ $appResources = @(Get-AzJson -Arguments @('resource','list','--resource-group',$
 $bootstrapResources = @(Get-AzJson -Arguments @('resource','list','--resource-group',$bootstrapRg))
 $aks = @($appResources | Where-Object { $_.type -eq 'Microsoft.ContainerService/managedClusters' -and $_.name -eq $aksName }) | Select-Object -First 1
 $acr = @($appResources | Where-Object { $_.type -eq 'Microsoft.ContainerRegistry/registries' -and $_.name -eq $acrName }) | Select-Object -First 1
+$logAnalytics = @(
+    $appResources | Where-Object {
+        $_.type -eq 'Microsoft.OperationalInsights/workspaces' -and
+        $_.name -eq $logAnalyticsName
+    }
+) | Select-Object -First 1
+
 $aksManagedResourceGroup = $null
 if ($aks) {
     $aksDetail = Get-AzJson -Arguments @('aks','show','--resource-group',$appRg,'--name',$aksName)
@@ -172,6 +180,9 @@ if ($agent) { Write-Host "  Azure DevOps agent: $agentName (pool $poolName; agen
 foreach ($role in $roleTargets) { Write-Host "  Temporary secret role assignment: $($role.id)" }
 if ($aks) { Write-Host "  AKS: $($aks.id)" }
 if ($acr) { Write-Host "  ACR: $($acr.id)" }
+if ($logAnalytics) {
+    Write-Host "  Log Analytics workspace: $($logAnalytics.id)"
+}
 if ($vmEntry) { Write-Host "  VM: $($vmEntry.id)"; Write-Host "  OS disk: $osDiskId" }
 foreach ($target in $netTargets) { Write-Host "  $($target.Type): $($target.Id)" }
 Write-Host "`nPRESERVED: all three RGs, Key Vault and PAT secret, Azure DevOps agent pool/pipelines/service connections, and persistent role grants." -ForegroundColor Green
@@ -205,6 +216,7 @@ if ($LASTEXITCODE -ne 0) {
 $knownAppIds = @(
     $aks.id
     $acr.id
+    $logAnalytics.id
 ) | Where-Object {
     $_ -is [string] -and
     -not [string]::IsNullOrWhiteSpace($_)
@@ -300,6 +312,16 @@ if ($aks) {
 if ($acr) {
     Write-Host 'Deleting ACR...'
     Invoke-AzChecked -Arguments @('acr','delete','--resource-group',$appRg,'--name',$acrName,'--yes')
+}
+if ($logAnalytics) {
+    Write-Host "Deleting disposable Log Analytics workspace..."
+
+    Invoke-AzChecked -Arguments @(
+        'monitor', 'log-analytics', 'workspace', 'delete',
+        '--resource-group', $appRg,
+        '--workspace-name', $logAnalyticsName,
+        '--yes'
+    )
 }
 if ($vmEntry) {
     Write-Host 'Deleting Linux agent VM (waiting for completion)...'
