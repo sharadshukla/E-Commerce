@@ -40,6 +40,8 @@ module aks './modules/aks.bicep' = if (deployAks) {
     nodeVmSize: 'Standard_D2as_v6'
     minNodeCount: 1
     maxNodeCount: 3
+
+    logAnalyticsWorkspaceId: logAnalytics!.outputs.workspaceId
   }
 }
 
@@ -55,3 +57,20 @@ module acrPullRole './modules/acr-pull-role.bicep' = if (deployAcr && deployAks)
     acr
   ]
 }
+
+@description('Log Analytics workspace for AKS observability')
+param logAnalyticsWorkspaceName string = 'law-ecommerce-aks'
+
+// Provision application-scoped monitoring infrastructure.
+module logAnalytics './modules/log-analytics.bicep' = if (deployAks) {
+  name: 'log-analytics-deployment'
+  params: {
+    workspaceName: logAnalyticsWorkspaceName
+    location: location
+    retentionInDays: 30
+  }
+}
+
+// Return the workspace ID only when monitoring infrastructure is deployed.
+output logAnalyticsWorkspaceId string? = deployAks ? logAnalytics!.outputs.workspaceId : null
+

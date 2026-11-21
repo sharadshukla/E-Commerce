@@ -18,6 +18,9 @@ param maxNodeCount int = 3
 @description('Microsoft Entra ID group authorized for AKS administration')
     param aksAdminGroupObjectId string
 
+@description('Resource ID of the Log Analytics workspace for Container Insights')
+param logAnalyticsWorkspaceId string
+
 resource aks 'Microsoft.ContainerService/managedClusters@2024-09-01' = {
   name: aksName
   location: location
@@ -39,6 +42,16 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-09-01' = {
 
     enableRBAC: true
     disableLocalAccounts: true
+
+    // Enable Container Insights to collect AKS telemetry into Log Analytics.
+    addonProfiles: {
+      omsagent: {
+        enabled: true
+        config: {
+          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceId
+        }
+      }
+    }
 
     agentPoolProfiles: [
       {

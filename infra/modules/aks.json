@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.48.1.52935",
-      "templateHash": "5397473097425285061"
+      "version": "0.49.2.45890",
+      "templateHash": "12425121796467305335"
     }
   },
   "parameters": {
@@ -47,6 +47,12 @@
       "metadata": {
         "description": "Microsoft Entra ID group authorized for AKS administration"
       }
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Log Analytics workspace for Container Insights"
+      }
     }
   },
   "resources": [
@@ -69,6 +75,14 @@
         },
         "enableRBAC": true,
         "disableLocalAccounts": true,
+        "addonProfiles": {
+          "omsagent": {
+            "enabled": true,
+            "config": {
+              "logAnalyticsWorkspaceResourceID": "[parameters('logAnalyticsWorkspaceId')]"
+            }
+          }
+        },
         "agentPoolProfiles": [
           {
             "name": "systempool",
@@ -93,6 +107,13 @@
     "aksPrincipalId": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('aksName')), '2024-09-01', 'full').identity.principalId]"
+    },
+    "aksKubeletObjectId": {
+      "type": "string",
+      "metadata": {
+        "description": "Object ID of the AKS kubelet managed identity used to pull container images"
+      },
+      "value": "[reference(resourceId('Microsoft.ContainerService/managedClusters', parameters('aksName')), '2024-09-01').identityProfile.kubeletidentity.objectId]"
     }
   }
 }
