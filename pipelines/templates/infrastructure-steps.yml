@@ -73,7 +73,7 @@ steps:
 
   # Step 4: Deploy Azure Infrastructure using Bicep
   - task: AzureCLI@2
-    displayName: 'Deploy Azure Infrastructure (ACR + AKS)'
+    displayName: 'Deploy Azure Infrastructure (ACR + AKS + Log Analytics)'
     env:
       AKS_ADMIN_GROUP_OBJECT_ID: $(aksAdminGroupObjectId)
     inputs:
@@ -111,16 +111,9 @@ steps:
         Write-Host "Azure infrastructure deployment completed successfully!"
 
 
-        # Apply the version-controlled, cost-conscious AKS log collection settings.
-        # Container Insights is enabled by Bicep; this step configures its collection policy.
+        # Container Insights is enabled declaratively by the AKS Bicep module.
+        # Verify the workspace and add-on.
 
-        $settingsFile = "infra/monitoring/data-collection-settings.json"
-
-        if (-not (Test-Path -LiteralPath $settingsFile)) {
-            throw "Container Insights settings file not found: $settingsFile"
-        }
-
-        # Verify that Bicep provisioned the intended workspace.
         $workspaceId = az monitor log-analytics workspace show `
             --resource-group e-commerce-app `
             --workspace-name law-ecommerce-aks `
@@ -131,36 +124,23 @@ steps:
             throw "Log Analytics workspace lookup failed."
         }
 
-        Write-Host "Configuring AKS Container Insights data collection..."
+        Write-Host "Log Analytics workspace verified."
 
-        az aks enable-addons `
-            --addon monitoring `
-            --resource-group e-commerce-app `
-            --name ecommerce-aks `
-            --workspace-resource-id $workspaceId `
-            --data-collection-settings $settingsFile `
-            --only-show-errors
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "Container Insights data collection configuration failed."
-        }
-
-        # Confirm the monitoring add-on is enabled.
+        # Confirm that AKS monitoring was enabled during Bicep deployment.
         $monitoringEnabled = az aks show `
             --resource-group e-commerce-app `
             --name ecommerce-aks `
             --query "addonProfiles.omsagent.enabled" `
-            -o tsv
+            --output tsv
 
         if ($LASTEXITCODE -ne 0 -or
             "$monitoringEnabled".Trim().ToLowerInvariant() -ne "true") {
             throw "AKS monitoring add-on verification failed."
         }
 
-        Write-Host "Container Insights monitoring add-on verified."
+        Write-Host "AKS Container Insights verified successfully."
 
 
-  
   # Step 5: Bootstrap native Kubernetes RBAC
   - task: AzureCLI@2
     displayName: 'Bootstrap Kubernetes namespace and RBAC'
