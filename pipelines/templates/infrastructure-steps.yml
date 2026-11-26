@@ -121,7 +121,7 @@ steps:
             throw "Log Analytics workspace lookup failed."
         }
 
-        $settingsFile = 'infra/data-collection-settings.json'
+        $settingsFile = 'infra/monitoring/data-collection-settings.json'
         if (-not (Test-Path $settingsFile)) { throw "Missing $settingsFile" }
         $settings = Get-Content $settingsFile -Raw | ConvertFrom-Json
         if (-not $settings.enableContainerLogV2 -or
