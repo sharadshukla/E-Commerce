@@ -16,10 +16,7 @@ param minNodeCount int = 1
 param maxNodeCount int = 3
 
 @description('Microsoft Entra ID group authorized for AKS administration')
-    param aksAdminGroupObjectId string
-
-@description('Resource ID of the Log Analytics workspace for Container Insights')
-param logAnalyticsWorkspaceId string
+param aksAdminGroupObjectId string
 
 resource aks 'Microsoft.ContainerService/managedClusters@2024-09-01' = {
   name: aksName
@@ -43,15 +40,8 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-09-01' = {
     enableRBAC: true
     disableLocalAccounts: true
 
-    // Enable Container Insights to collect AKS telemetry into Log Analytics.
-    addonProfiles: {
-      omsagent: {
-        enabled: true
-        config: {
-          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceId
-        }
-      }
-    }
+    // The pipeline enables Container Insights once, with MSI and explicit DCR settings.
+    // Keeping it out of this AKS declaration avoids overlapping onboarding paths.
 
     agentPoolProfiles: [
       {

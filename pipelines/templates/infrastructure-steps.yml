@@ -111,34 +111,82 @@ steps:
         Write-Host "Azure infrastructure deployment completed successfully!"
 
 
-        # Container Insights is enabled declaratively by the AKS Bicep module.
-        # Verify the workspace and add-on.
-
+        # One authoritative onboarding path: Azure CLI creates the agent's DCR/association.
+        # Never create a second Container Insights DCR from Bicep.
         $workspaceId = az monitor log-analytics workspace show `
             --resource-group e-commerce-app `
             --workspace-name law-ecommerce-aks `
             --query id -o tsv
-
-        if ($LASTEXITCODE -ne 0 -or
-            [string]::IsNullOrWhiteSpace($workspaceId)) {
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($workspaceId)) {
             throw "Log Analytics workspace lookup failed."
         }
 
-        Write-Host "Log Analytics workspace verified."
-
-        # Confirm that AKS monitoring was enabled during Bicep deployment.
-        $monitoringEnabled = az aks show `
-            --resource-group e-commerce-app `
-            --name ecommerce-aks `
-            --query "addonProfiles.omsagent.enabled" `
-            --output tsv
-
-        if ($LASTEXITCODE -ne 0 -or
-            "$monitoringEnabled".Trim().ToLowerInvariant() -ne "true") {
-            throw "AKS monitoring add-on verification failed."
+        $settingsFile = 'infra/data-collection-settings.json'
+        if (-not (Test-Path $settingsFile)) { throw "Missing $settingsFile" }
+        $settings = Get-Content $settingsFile -Raw | ConvertFrom-Json
+        if (-not $settings.enableContainerLogV2 -or
+            'Microsoft-ContainerLogV2' -notin @($settings.streams)) {
+            throw 'ContainerLogV2 must be enabled in data collection settings.'
         }
 
-        Write-Host "AKS Container Insights verified successfully."
+        $addon = az aks show `
+            --resource-group e-commerce-app `
+            --name ecommerce-aks `
+            --query 'addonProfiles.omsagent' -o json | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw 'Unable to read AKS monitoring state.' }
+
+        if ($addon.enabled -eq $true) {
+            # Fail closed: never silently accept a legacy or different monitoring setup.
+            if ($addon.config.useAADAuth -ne 'true' -or
+                $addon.config.logAnalyticsWorkspaceResourceID -ine $workspaceId) {
+                throw 'Existing Container Insights configuration does not match expected MSI/workspace. Manual reconciliation required.'
+            }
+            Write-Host 'Container Insights already enabled with managed identity.'
+        }
+        else {
+            Write-Host 'Enabling Container Insights once with MSI and explicit collection settings...'
+            az aks enable-addons `
+                --resource-group e-commerce-app `
+                --name ecommerce-aks `
+                --addons monitoring `
+                --workspace-resource-id $workspaceId `
+                --enable-msi-auth-for-monitoring `
+                --data-collection-settings $settingsFile
+            if ($LASTEXITCODE -ne 0) { throw 'Container Insights enablement failed.' }
+        }
+
+        $auth = az aks show `
+            --resource-group e-commerce-app `
+            --name ecommerce-aks `
+            --query 'addonProfiles.omsagent.config.useAADAuth' -o tsv
+        if ($LASTEXITCODE -ne 0 -or "$auth".Trim().ToLowerInvariant() -ne 'true') {
+            throw 'Container Insights managed identity authentication verification failed.'
+        }
+        $aksId = az aks show --resource-group e-commerce-app --name ecommerce-aks --query id -o tsv
+        if ($LASTEXITCODE -ne 0) { throw 'AKS ID lookup failed.' }
+        $associations = @(az monitor data-collection rule association list --resource $aksId -o json | ConvertFrom-Json)
+        if ($LASTEXITCODE -ne 0) { throw 'DCR association lookup failed.' }
+        $ci = @($associations | Where-Object { $_.name -eq 'ContainerInsightsExtension' })
+        if ($ci.Count -ne 1 -or -not $ci[0].dataCollectionRuleId) {
+            throw 'Expected exactly one Container Insights DCR association.'
+        }
+        $dcr = az resource show --ids $ci[0].dataCollectionRuleId -o json | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw 'DCR lookup failed.' }
+        $streams = @($dcr.properties.dataSources.extensions | Where-Object { $_.extensionName -eq 'ContainerInsights' } | ForEach-Object { $_.streams })
+        $flowStreams = @($dcr.properties.dataFlows | ForEach-Object { $_.streams })
+        foreach ($required in @('Microsoft-ContainerLogV2','Microsoft-KubeEvents','Microsoft-KubePodInventory')) {
+            if ($required -notin $streams -or $required -notin $flowStreams) {
+                throw "DCR is missing required stream: $required"
+            }
+        }
+        $collection = @($dcr.properties.dataSources.extensions | Where-Object { $_.extensionName -eq 'ContainerInsights' })[0].extensionSettings.dataCollectionSettings
+        if ($collection.enableContainerLogV2 -ne $true -or
+            $collection.interval -ne $settings.interval -or
+            $collection.namespaceFilteringMode -ne $settings.namespaceFilteringMode -or
+            (@($collection.namespaces) -join ',') -ne (@($settings.namespaces) -join ',')) {
+            throw 'DCR collection settings mismatch. Do not proceed with unverified monitoring.'
+        }
+        Write-Host "Container Insights MSI and generated DCR verified: $($ci[0].dataCollectionRuleId)"
 
 
   # Step 5: Bootstrap native Kubernetes RBAC

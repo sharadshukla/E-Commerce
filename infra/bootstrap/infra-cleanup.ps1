@@ -14,7 +14,9 @@ $securityRg = 'ecommerce-security-rg'
 $aksName = 'ecommerce-aks'
 $acrName = 'ecommerceregistrynew'
 $logAnalyticsName = 'law-ecommerce-aks'
-$containerInsightsDcrName = 'MSCI-ecommerce-aks-eastus'
+# Azure can generate either DCR name depending on onboarding/version.
+$containerInsightsDcrNames = @('MSCI-ecommerce-aks-eastus', 'MSCI-eastus-ecommerce-aks')
+$containerInsightsSolutionName = 'ContainerInsights(law-ecommerce-aks)'
 # Managed Prometheus uses a default Azure Monitor workspace outside this app RG.
 # Do NOT delete default/shared Azure Monitor workspaces automatically.
 $prometheusWorkspaceName = 'defaultazuremonitorworkspace-eus'
@@ -67,12 +69,14 @@ $appResources = @(Get-AzJson -Arguments @('resource','list','--resource-group',$
 $bootstrapResources = @(Get-AzJson -Arguments @('resource','list','--resource-group',$bootstrapRg))
 $aks = @($appResources | Where-Object { $_.type -eq 'Microsoft.ContainerService/managedClusters' -and $_.name -eq $aksName }) | Select-Object -First 1
 $acr = @($appResources | Where-Object { $_.type -eq 'Microsoft.ContainerRegistry/registries' -and $_.name -eq $acrName }) | Select-Object -First 1
-$containerInsightsDcr = @(
-    $appResources | Where-Object {
-        $_.type -eq 'Microsoft.Insights/dataCollectionRules' -and
-        $_.name -eq $containerInsightsDcrName
-    }
-) | Select-Object -First 1
+$containerInsightsDcrs = @($appResources | Where-Object {
+    $_.type -eq 'Microsoft.Insights/dataCollectionRules' -and
+    $_.name -in $containerInsightsDcrNames
+})
+$containerInsightsSolutions = @($appResources | Where-Object {
+    $_.type -eq 'Microsoft.OperationsManagement/solutions' -and
+    $_.name -eq $containerInsightsSolutionName
+})
 $logAnalytics = @(
     $appResources | Where-Object {
         $_.type -eq 'Microsoft.OperationalInsights/workspaces' -and
@@ -190,7 +194,8 @@ if ($agent) { Write-Host "  Azure DevOps agent: $agentName (pool $poolName; agen
 foreach ($role in $roleTargets) { Write-Host "  Temporary secret role assignment: $($role.id)" }
 if ($aks) { Write-Host "  AKS: $($aks.id)" }
 if ($acr) { Write-Host "  ACR: $($acr.id)" }
-if ($containerInsightsDcr) { Write-Host "  Container Insights DCR: $($containerInsightsDcr.id)" }
+foreach ($dcr in $containerInsightsDcrs) { Write-Host "  Container Insights DCR: $($dcr.id)" }
+foreach ($solution in $containerInsightsSolutions) { Write-Host "  Container Insights solution: $($solution.id)" }
 if ($logAnalytics) {
     Write-Host "  Log Analytics workspace: $($logAnalytics.id)"
 }
@@ -229,7 +234,8 @@ $knownAppIds = @(
     $aks.id
     $acr.id
     $logAnalytics.id
-    $containerInsightsDcr.id
+    $containerInsightsDcrs | ForEach-Object { $_.id }
+    $containerInsightsSolutions | ForEach-Object { $_.id }
 ) | Where-Object {
     $_ -is [string] -and
     -not [string]::IsNullOrWhiteSpace($_)
@@ -326,12 +332,21 @@ if ($acr) {
     Write-Host 'Deleting ACR...'
     Invoke-AzChecked -Arguments @('acr','delete','--resource-group',$appRg,'--name',$acrName,'--yes')
 }
-if ($containerInsightsDcr) {
-    # AKS deletion can remove generated monitoring resources; avoid a second delete.
-    $remainingDcr = Find-Resource -ResourceGroup $appRg -ResourceType 'Microsoft.Insights/dataCollectionRules' -Name $containerInsightsDcrName
-    if ($remainingDcr) {
-        Write-Host "Deleting project-owned Container Insights DCR..."
-        Invoke-AzChecked -Arguments @('resource','delete','--ids',$remainingDcr.id)
+# Do not delete the Log Analytics workspace before dependent solutions and rules.
+# The AKS DCR association is scoped to AKS and should disappear with the AKS deletion.
+# Each delete is separate, so failure identifies the exact resource.
+foreach ($solution in $containerInsightsSolutions) {
+    $remaining = Find-Resource -ResourceGroup $appRg -ResourceType $solution.type -Name $solution.name
+    if ($remaining) {
+        Write-Host "Deleting Container Insights solution: $($solution.name)"
+        Invoke-AzChecked -Arguments @('resource','delete','--ids',$remaining.id)
+    }
+}
+foreach ($dcr in $containerInsightsDcrs) {
+    $remaining = Find-Resource -ResourceGroup $appRg -ResourceType $dcr.type -Name $dcr.name
+    if ($remaining) {
+        Write-Host "Deleting Container Insights DCR: $($dcr.name)"
+        Invoke-AzChecked -Arguments @('resource','delete','--ids',$remaining.id)
     }
 }
 if ($logAnalytics) {
@@ -392,9 +407,11 @@ $stillKnownBootstrap = @(
         ([string]$_.id).TrimEnd('/').ToLowerInvariant() -in $knownBootstrapIds
     }
 )
-if ($stillKnownApp.Count -gt 0 -or $stillKnownBootstrap.Count -gt 0 -or $remainingTargetAgent.Count -gt 0 -or $remainingRoles.Count -gt 0) {
+# Fail if any application resources remain, including newly generated monitoring resources.
+# The bootstrap RG is intentionally checked for exact known resources separately.
+if ($leftApp.Count -gt 0 -or $stillKnownBootstrap.Count -gt 0 -or $remainingTargetAgent.Count -gt 0 -or $remainingRoles.Count -gt 0) {
     Write-Warning 'Some targeted resources or registrations remain. Inspect them before redeploying.'
-    @($stillKnownApp + $stillKnownBootstrap) | Select-Object name,type,id | Format-Table -AutoSize
+    @($leftApp + $stillKnownBootstrap) | Select-Object name,type,id | Format-Table -AutoSize
     throw 'Infrastructure cleanup verification FAILED.'
 }
 if ($aksManagedResourceGroup) {
@@ -402,5 +419,5 @@ if ($aksManagedResourceGroup) {
     if ($LASTEXITCODE -ne 0) { throw 'Failed to verify AKS-managed resource group deletion.' }
     if ($mcExists -eq 'true') { throw "AKS-managed resource group still exists: $aksManagedResourceGroup" }
 }
-Write-Host 'Targeted app/bootstrap resources, Container Insights DCR, agent registration, temporary RBAC assignment and AKS-managed RG verified removed.' -ForegroundColor Green
+Write-Host 'App RG empty; targeted bootstrap resources, agent registration, temporary RBAC assignment and AKS-managed RG verified removed.' -ForegroundColor Green
 Write-Warning "This does not prove subscription-wide cleanup. Check the default Azure Monitor workspace ($prometheusWorkspaceName), Prometheus DCR/DCRA and recording rule groups, monitoring alerts/action groups, and any other out-of-scope resource groups separately."
