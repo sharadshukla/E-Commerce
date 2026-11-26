@@ -1,4 +1,4 @@
-# E-Commerce v1.3.0 - Controlled infrastructure cleanup
+# E-Commerce v1.4.0 - Controlled infrastructure cleanup (v1.4.0 monitoring-aware)
 # Execute locally (NOT on ecommerce-agent-vm). Preview by default.
 param(
     [Parameter(Mandatory = $true)]
@@ -14,6 +14,10 @@ $securityRg = 'ecommerce-security-rg'
 $aksName = 'ecommerce-aks'
 $acrName = 'ecommerceregistrynew'
 $logAnalyticsName = 'law-ecommerce-aks'
+$containerInsightsDcrName = 'MSCI-ecommerce-aks-eastus'
+# Managed Prometheus uses a default Azure Monitor workspace outside this app RG.
+# Do NOT delete default/shared Azure Monitor workspaces automatically.
+$prometheusWorkspaceName = 'defaultazuremonitorworkspace-eus'
 $vmName = 'ecommerce-agent-vm'
 $keyVaultName = 'kv-ecommerce-agent-26641'
 $secretName = 'azdo-agent-registration-pat'
@@ -43,7 +47,7 @@ function Find-Resource {
     return @($items | Where-Object { $_.type -eq $ResourceType -and $_.name -eq $Name }) | Select-Object -First 1
 }
 
-Write-Host "`nE-Commerce v1.3.0 Infrastructure Cleanup" -ForegroundColor Cyan
+Write-Host "`nE-Commerce v1.4.0 Infrastructure Cleanup" -ForegroundColor Cyan
 $account = Get-AzJson -Arguments @('account','show')
 if ($account.id -ne $SubscriptionId) { throw "Subscription mismatch. Selected: $($account.id); expected: $SubscriptionId" }
 Write-Host "Subscription verified: $($account.name) ($SubscriptionId)"
@@ -63,6 +67,12 @@ $appResources = @(Get-AzJson -Arguments @('resource','list','--resource-group',$
 $bootstrapResources = @(Get-AzJson -Arguments @('resource','list','--resource-group',$bootstrapRg))
 $aks = @($appResources | Where-Object { $_.type -eq 'Microsoft.ContainerService/managedClusters' -and $_.name -eq $aksName }) | Select-Object -First 1
 $acr = @($appResources | Where-Object { $_.type -eq 'Microsoft.ContainerRegistry/registries' -and $_.name -eq $acrName }) | Select-Object -First 1
+$containerInsightsDcr = @(
+    $appResources | Where-Object {
+        $_.type -eq 'Microsoft.Insights/dataCollectionRules' -and
+        $_.name -eq $containerInsightsDcrName
+    }
+) | Select-Object -First 1
 $logAnalytics = @(
     $appResources | Where-Object {
         $_.type -eq 'Microsoft.OperationalInsights/workspaces' -and
@@ -180,12 +190,14 @@ if ($agent) { Write-Host "  Azure DevOps agent: $agentName (pool $poolName; agen
 foreach ($role in $roleTargets) { Write-Host "  Temporary secret role assignment: $($role.id)" }
 if ($aks) { Write-Host "  AKS: $($aks.id)" }
 if ($acr) { Write-Host "  ACR: $($acr.id)" }
+if ($containerInsightsDcr) { Write-Host "  Container Insights DCR: $($containerInsightsDcr.id)" }
 if ($logAnalytics) {
     Write-Host "  Log Analytics workspace: $($logAnalytics.id)"
 }
+Write-Warning "Default Azure Monitor workspace ($prometheusWorkspaceName) is NOT a cleanup target. Confirm its ownership and usage separately before any deletion."
 if ($vmEntry) { Write-Host "  VM: $($vmEntry.id)"; Write-Host "  OS disk: $osDiskId" }
 foreach ($target in $netTargets) { Write-Host "  $($target.Type): $($target.Id)" }
-Write-Host "`nPRESERVED: all three RGs, Key Vault and PAT secret, Azure DevOps agent pool/pipelines/service connections, and persistent role grants." -ForegroundColor Green
+Write-Host "`nPRESERVED: all three RGs, Key Vault and PAT secret, Azure DevOps agent pool/pipelines/service connections, persistent role grants, and default/shared Azure Monitor workspace." -ForegroundColor Green
 
 # Compare actual Azure resource IDs against the known deployment resources.
 # Retrieve inventory IDs as plain text to avoid nested JSON arrays.
@@ -217,6 +229,7 @@ $knownAppIds = @(
     $aks.id
     $acr.id
     $logAnalytics.id
+    $containerInsightsDcr.id
 ) | Where-Object {
     $_ -is [string] -and
     -not [string]::IsNullOrWhiteSpace($_)
@@ -313,6 +326,14 @@ if ($acr) {
     Write-Host 'Deleting ACR...'
     Invoke-AzChecked -Arguments @('acr','delete','--resource-group',$appRg,'--name',$acrName,'--yes')
 }
+if ($containerInsightsDcr) {
+    # AKS deletion can remove generated monitoring resources; avoid a second delete.
+    $remainingDcr = Find-Resource -ResourceGroup $appRg -ResourceType 'Microsoft.Insights/dataCollectionRules' -Name $containerInsightsDcrName
+    if ($remainingDcr) {
+        Write-Host "Deleting project-owned Container Insights DCR..."
+        Invoke-AzChecked -Arguments @('resource','delete','--ids',$remainingDcr.id)
+    }
+}
 if ($logAnalytics) {
     Write-Host "Deleting disposable Log Analytics workspace..."
 
@@ -381,4 +402,5 @@ if ($aksManagedResourceGroup) {
     if ($LASTEXITCODE -ne 0) { throw 'Failed to verify AKS-managed resource group deletion.' }
     if ($mcExists -eq 'true') { throw "AKS-managed resource group still exists: $aksManagedResourceGroup" }
 }
-Write-Host 'Targeted resources, agent registration, temporary RBAC assignment and AKS-managed RG verified removed.' -ForegroundColor Green
+Write-Host 'Targeted app/bootstrap resources, Container Insights DCR, agent registration, temporary RBAC assignment and AKS-managed RG verified removed.' -ForegroundColor Green
+Write-Warning "This does not prove subscription-wide cleanup. Check the default Azure Monitor workspace ($prometheusWorkspaceName), Prometheus DCR/DCRA and recording rule groups, monitoring alerts/action groups, and any other out-of-scope resource groups separately."

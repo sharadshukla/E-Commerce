@@ -74,3 +74,18 @@ module logAnalytics './modules/log-analytics.bicep' = if (deployAks) {
 // Return the workspace ID only when monitoring infrastructure is deployed.
 output logAnalyticsWorkspaceId string? = deployAks ? logAnalytics!.outputs.workspaceId : null
 
+
+// Configure Container Insights collection for the AKS application.
+// The module creates the DCR and associates it with the cluster.
+module containerInsightsDcr './modules/container-insights-dcr.bicep' = if (deployAks) {
+  name: 'container-insights-dcr-deployment'
+  params: {
+    aksName: aksName
+    location: location
+    logAnalyticsWorkspaceId: logAnalytics!.outputs.workspaceId
+  }
+  dependsOn: [
+    aks
+  ]
+}
+
