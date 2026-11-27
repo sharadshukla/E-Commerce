@@ -10,6 +10,10 @@ $ErrorActionPreference = 'Stop'
 
 $appRg = 'e-commerce-app'
 $bootstrapRg = 'ecommerce-bootstrap-rg'
+# The manually created restart alert is outside the application RG.
+$externalAlertRg = 'NetworkWatcherRG'
+$restartAlertName = 'alert-ecommerce-container-restarts'
+$actionGroupName = 'ag-ecommerce-monitoring'
 $securityRg = 'ecommerce-security-rg'
 $aksName = 'ecommerce-aks'
 $acrName = 'ecommerceregistrynew'
@@ -30,11 +34,31 @@ $secretUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 
 function Get-AzJson {
     param([Parameter(Mandatory)][string[]]$Arguments)
+
     $lines = & az @Arguments --output json
-    if ($LASTEXITCODE -ne 0) { throw "Azure CLI query failed: az $($Arguments -join ' ')" }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Azure CLI query failed: az $($Arguments -join ' ')"
+    }
+
     $raw = $lines -join "`n"
-    if ([string]::IsNullOrWhiteSpace($raw)) { throw "Empty response from: az $($Arguments -join ' ')" }
-    return ConvertFrom-Json -InputObject $raw
+
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw "Empty response from: az $($Arguments -join ' ')"
+    }
+
+    $parsed = ConvertFrom-Json -InputObject $raw
+
+    # Emit collection items individually rather than returning
+    # the entire JSON array as a single pipeline object.
+    if ($parsed -is [array]) {
+        foreach ($item in $parsed) {
+            Write-Output $item
+        }
+    }
+    else {
+        Write-Output $parsed
+    }
 }
 
 function Invoke-AzChecked {
@@ -67,6 +91,22 @@ $secretScope = "$($kv.id)/secrets/$secretName"
 
 $appResources = @(Get-AzJson -Arguments @('resource','list','--resource-group',$appRg))
 $bootstrapResources = @(Get-AzJson -Arguments @('resource','list','--resource-group',$bootstrapRg))
+
+$externalAlertResources = @(
+    Get-AzJson -Arguments @('monitor', 'scheduled-query', 'list',
+        '--resource-group', $externalAlertRg
+    ))
+
+$restartAlerts = @(
+    $externalAlertResources | Where-Object {$_.name -eq $restartAlertName
+    })
+
+$actionGroups = @($appResources | Where-Object {
+    $_.type -eq 'Microsoft.Insights/actionGroups' -and $_.name -eq $actionGroupName
+})
+if ($restartAlerts.Count -gt 1 -or $actionGroups.Count -gt 1) {
+    throw 'Duplicate alert or action group resources detected. Refusing cleanup.'
+}
 $aks = @($appResources | Where-Object { $_.type -eq 'Microsoft.ContainerService/managedClusters' -and $_.name -eq $aksName }) | Select-Object -First 1
 $acr = @($appResources | Where-Object { $_.type -eq 'Microsoft.ContainerRegistry/registries' -and $_.name -eq $acrName }) | Select-Object -First 1
 $containerInsightsDcrs = @($appResources | Where-Object {
@@ -194,6 +234,8 @@ if ($agent) { Write-Host "  Azure DevOps agent: $agentName (pool $poolName; agen
 foreach ($role in $roleTargets) { Write-Host "  Temporary secret role assignment: $($role.id)" }
 if ($aks) { Write-Host "  AKS: $($aks.id)" }
 if ($acr) { Write-Host "  ACR: $($acr.id)" }
+foreach ($alert in $restartAlerts) { Write-Host "  Restart alert ($externalAlertRg): $($alert.id)" }
+foreach ($group in $actionGroups) { Write-Host "  Email action group: $($group.id)" }
 foreach ($dcr in $containerInsightsDcrs) { Write-Host "  Container Insights DCR: $($dcr.id)" }
 foreach ($solution in $containerInsightsSolutions) { Write-Host "  Container Insights solution: $($solution.id)" }
 if ($logAnalytics) {
@@ -202,7 +244,7 @@ if ($logAnalytics) {
 Write-Warning "Default Azure Monitor workspace ($prometheusWorkspaceName) is NOT a cleanup target. Confirm its ownership and usage separately before any deletion."
 if ($vmEntry) { Write-Host "  VM: $($vmEntry.id)"; Write-Host "  OS disk: $osDiskId" }
 foreach ($target in $netTargets) { Write-Host "  $($target.Type): $($target.Id)" }
-Write-Host "`nPRESERVED: all three RGs, Key Vault and PAT secret, Azure DevOps agent pool/pipelines/service connections, persistent role grants, and default/shared Azure Monitor workspace." -ForegroundColor Green
+Write-Host "`nPRESERVED: all three RGs, $externalAlertRg and its other resources, Key Vault and PAT secret, Azure DevOps agent pool/pipelines/service connections, persistent role grants, and default/shared Azure Monitor workspace." -ForegroundColor Green
 
 # Compare actual Azure resource IDs against the known deployment resources.
 # Retrieve inventory IDs as plain text to avoid nested JSON arrays.
@@ -234,6 +276,7 @@ $knownAppIds = @(
     $aks.id
     $acr.id
     $logAnalytics.id
+    $actionGroups | ForEach-Object { $_.id }
     $containerInsightsDcrs | ForEach-Object { $_.id }
     $containerInsightsSolutions | ForEach-Object { $_.id }
 ) | Where-Object {
@@ -312,6 +355,28 @@ if ($agent -and $agent.assignedRequest) {
 $confirmation = Read-Host 'Type DELETE ECOMMERCE INFRA to continue'
 if ($confirmation -cne 'DELETE ECOMMERCE INFRA') { throw 'Cleanup cancelled.' }
 
+
+# Snapshot exact discovered targets for a concise post-confirmation plan and final report.
+$cleanupTargets = @(
+    if ($agent) { [pscustomobject]@{ Label="Azure DevOps agent: $agentName"; Id=$null; Kind='agent' } }
+    foreach ($role in $roleTargets) { [pscustomobject]@{ Label='Temporary Key Vault role assignment'; Id=$role.id; Kind='role' } }
+    foreach ($alert in $restartAlerts) { [pscustomobject]@{ Label="Restart alert: $($alert.name)"; Id=$alert.id; Kind='alert' } }
+    foreach ($group in $actionGroups) { [pscustomobject]@{ Label="Action group: $($group.name)"; Id=$group.id; Kind='action' } }
+    foreach ($item in @($aks,$acr,$logAnalytics)) { if ($item) { [pscustomobject]@{ Label="$($item.name) ($($item.type.Split('/')[-1]))"; Id=$item.id; Kind='app' } } }
+    foreach ($item in $containerInsightsSolutions) { [pscustomobject]@{ Label="Container Insights solution: $($item.name)"; Id=$item.id; Kind='app' } }
+    foreach ($item in $containerInsightsDcrs) { [pscustomobject]@{ Label="Container Insights DCR: $($item.name)"; Id=$item.id; Kind='app' } }
+    if ($vmEntry) { [pscustomobject]@{ Label="Linux agent VM: $vmName"; Id=$vmEntry.id; Kind='bootstrap' } }
+    if ($osDiskId) { [pscustomobject]@{ Label='Linux agent OS disk'; Id=$osDiskId; Kind='bootstrap' } }
+    foreach ($item in $netTargets) { [pscustomobject]@{ Label="Agent network: $($item.Name)"; Id=$item.Id; Kind='bootstrap' } }
+    if ($aksManagedResourceGroup) { [pscustomobject]@{ Label="AKS-managed RG: $aksManagedResourceGroup"; Id=$null; Kind='aksrg' } }
+)
+Write-Host "`nCLEANUP PLAN ($($cleanupTargets.Count) discovered targets)" -ForegroundColor Cyan
+foreach ($target in $cleanupTargets) { Write-Host "  - $($target.Label)" }
+Write-Host 'Preserved: shared RGs, Key Vault/secret, DevOps pool/pipelines and default Azure Monitor workspace.'
+
+# Report after success OR the first failed deletion. Never report success from CLI exit codes alone.
+try {
+
 if ($agent) {
     Write-Host 'Deregistering the exact Azure DevOps agent (preserving the pool)...'
     # Invoke the Azure DevOps REST agent-delete route *through the authenticated Azure DevOps CLI*.
@@ -322,6 +387,17 @@ if ($agent) {
 foreach ($role in $roleTargets) {
     Write-Host 'Removing only VM managed identity Key Vault Secrets User assignment...'
     Invoke-AzChecked -Arguments @('role','assignment','delete','--ids',$role.id)
+}
+
+# Delete only the explicitly identified restart alert and action group.
+# Do not delete or otherwise modify the NetworkWatcherRG resource group.
+foreach ($alert in $restartAlerts) {
+    Write-Host "Deleting restart alert ($externalAlertRg): $($alert.name)"
+    Invoke-AzChecked -Arguments @('monitor','scheduled-query','delete','--resource-group',$externalAlertRg,'--name',$alert.name,'--yes')
+}
+foreach ($group in $actionGroups) {
+    Write-Host "Deleting email action group: $($group.name)"
+    Invoke-AzChecked -Arguments @('monitor','action-group','delete','--resource-group',$appRg,'--name',$group.name)
 }
 
 if ($aks) {
@@ -386,6 +462,15 @@ foreach ($target in $netTargets) {
 Write-Host "`nFinal verification..." -ForegroundColor Cyan
 $leftApp = @(Get-AzJson -Arguments @('resource','list','--resource-group',$appRg))
 $leftBootstrap = @(Get-AzJson -Arguments @('resource','list','--resource-group',$bootstrapRg))
+
+$leftExternalAlerts = @(
+    Get-AzJson -Arguments @(
+        'monitor', 'scheduled-query', 'list',
+        '--resource-group', $externalAlertRg
+    ) | Where-Object {
+        $_.name -eq $restartAlertName
+    }
+)
 $remainingAgents = @(Get-AzJson -Arguments @('pipelines','agent','list','--organization',$organization,'--pool-id',"$poolId"))
 $remainingTargetAgent = @($remainingAgents | Where-Object { $_.name -eq $agentName })
 $remainingRoles = @()
@@ -409,9 +494,9 @@ $stillKnownBootstrap = @(
 )
 # Fail if any application resources remain, including newly generated monitoring resources.
 # The bootstrap RG is intentionally checked for exact known resources separately.
-if ($leftApp.Count -gt 0 -or $stillKnownBootstrap.Count -gt 0 -or $remainingTargetAgent.Count -gt 0 -or $remainingRoles.Count -gt 0) {
+if ($leftApp.Count -gt 0 -or $leftExternalAlerts.Count -gt 0 -or $stillKnownBootstrap.Count -gt 0 -or $remainingTargetAgent.Count -gt 0 -or $remainingRoles.Count -gt 0) {
     Write-Warning 'Some targeted resources or registrations remain. Inspect them before redeploying.'
-    @($leftApp + $stillKnownBootstrap) | Select-Object name,type,id | Format-Table -AutoSize
+    @($leftApp + $leftExternalAlerts + $stillKnownBootstrap) | Select-Object name,type,id | Format-Table -AutoSize
     throw 'Infrastructure cleanup verification FAILED.'
 }
 if ($aksManagedResourceGroup) {
@@ -419,5 +504,50 @@ if ($aksManagedResourceGroup) {
     if ($LASTEXITCODE -ne 0) { throw 'Failed to verify AKS-managed resource group deletion.' }
     if ($mcExists -eq 'true') { throw "AKS-managed resource group still exists: $aksManagedResourceGroup" }
 }
-Write-Host 'App RG empty; targeted bootstrap resources, agent registration, temporary RBAC assignment and AKS-managed RG verified removed.' -ForegroundColor Green
+Write-Host 'App RG empty; external restart alert, targeted bootstrap resources, agent registration, temporary RBAC assignment and AKS-managed RG verified removed.' -ForegroundColor Green
 Write-Warning "This does not prove subscription-wide cleanup. Check the default Azure Monitor workspace ($prometheusWorkspaceName), Prometheus DCR/DCRA and recording rule groups, monitoring alerts/action groups, and any other out-of-scope resource groups separately."
+
+}
+finally {
+    Write-Host "`n========== VERIFIED CLEANUP REPORT ==========" -ForegroundColor Cyan
+    $inventoryErrors = @()
+    $finalApp = @(); $finalBootstrap = @(); $finalAlerts = @(); $finalAgents = @(); $finalRoles = @()
+    $appOk = $false; $bootstrapOk = $false; $alertsOk = $false; $agentsOk = $false; $rolesOk = $false; $aksRgOk = $false
+    try { $finalApp = @(Get-AzJson -Arguments @('resource','list','--resource-group',$appRg)); $appOk = $true } catch { $inventoryErrors += "App RG: $_" }
+    try { $finalBootstrap = @(Get-AzJson -Arguments @('resource','list','--resource-group',$bootstrapRg)); $bootstrapOk = $true } catch { $inventoryErrors += "Bootstrap RG: $_" }
+    try { $finalAlerts = @(Get-AzJson -Arguments @('monitor','scheduled-query','list','--resource-group',$externalAlertRg)); $alertsOk = $true } catch { $inventoryErrors += "Alert RG: $_" }
+    try { $finalAgents = @(Get-AzJson -Arguments @('pipelines','agent','list','--organization',$organization,'--pool-id',"$poolId")); $agentsOk = $true } catch { $inventoryErrors += "DevOps agents: $_" }
+    try { $finalRoles = @(Get-AzJson -Arguments @('role','assignment','list','--scope',$secretScope)); $rolesOk = $true } catch { $inventoryErrors += "Key Vault RBAC: $_" }
+    try {
+        if ($aksManagedResourceGroup) {
+            $aksRgExists = (& az group exists --name $aksManagedResourceGroup --output tsv) -join ''
+            if ($LASTEXITCODE -ne 0) { throw 'AKS-managed RG lookup failed' }
+        }
+        $aksRgOk = $true
+    } catch { $inventoryErrors += "AKS-managed RG: $_" }
+
+    $reportFailed = $false
+    foreach ($target in $cleanupTargets) {
+        $status = 'UNKNOWN'
+        switch ($target.Kind) {
+            'app' { if ($appOk) { $status = if (@($finalApp | Where-Object { $_.id -eq $target.Id }).Count) { 'REMAINING' } else { 'REMOVED' } } }
+            'bootstrap' { if ($bootstrapOk) { $status = if (@($finalBootstrap | Where-Object { $_.id -eq $target.Id }).Count) { 'REMAINING' } else { 'REMOVED' } } }
+            'alert' { if ($alertsOk) { $status = if (@($finalAlerts | Where-Object { $_.id -eq $target.Id }).Count) { 'REMAINING' } else { 'REMOVED' } } }
+            'action' { if ($appOk) { $status = if (@($finalApp | Where-Object { $_.id -eq $target.Id }).Count) { 'REMAINING' } else { 'REMOVED' } } }
+            'agent' { if ($agentsOk) { $status = if (@($finalAgents | Where-Object { $_.name -eq $agentName }).Count) { 'REMAINING' } else { 'REMOVED' } } }
+            'role' { if ($rolesOk) { $status = if (@($finalRoles | Where-Object { $_.id -eq $target.Id }).Count) { 'REMAINING' } else { 'REMOVED' } } }
+            'aksrg' { if ($aksRgOk) { $status = if ($aksRgExists -eq 'true') { 'REMAINING' } else { 'REMOVED' } } }
+        }
+        Write-Host "  [$status] $($target.Label)"
+        if ($status -ne 'REMOVED') { $reportFailed = $true }
+    }
+    if ($appOk -and $finalApp.Count -gt 0) { $reportFailed = $true; Write-Warning "Application RG still contains $($finalApp.Count) resource(s)." }
+    if ($bootstrapOk -and @($finalBootstrap | Where-Object { $_.id -and ([string]$_.id).TrimEnd('/').ToLowerInvariant() -in $knownBootstrapIds }).Count -gt 0) { $reportFailed = $true; Write-Warning 'Known bootstrap resources still remain.' }
+    foreach ($issue in $inventoryErrors) { Write-Warning "Verification unavailable: $issue" }
+    if ($reportFailed -or $inventoryErrors.Count -gt 0) {
+        Write-Warning 'CLEANUP INCOMPLETE or not fully verified. Inspect REMAINING/UNKNOWN resources; do not blindly rerun.'
+        Write-Host 'Review the failed command and delete only the specific remaining resource after verifying its ownership.'
+    }
+    else { Write-Host 'All discovered targets verified removed. Shared resources were outside cleanup scope.' -ForegroundColor Green }
+    Write-Host '============================================'
+}
