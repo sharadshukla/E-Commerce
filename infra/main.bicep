@@ -15,6 +15,11 @@ param location string = resourceGroup().location
 @description('Azure Container Registry name')
 param acrName string
 
+@description('Email recipient for E-Commerce monitoring alerts')
+@secure()
+param alertEmail string
+
+
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (deployAcr) {
   name: acrName
   location: location
@@ -77,3 +82,13 @@ output logAnalyticsWorkspaceId string? = deployAks ? logAnalytics!.outputs.works
 // using `az aks enable-addons --addons monitoring --data-collection-settings`.
 // Azure owns the generated Container Insights DCR and its association.
 // Do not also deploy modules/container-insights-dcr.bicep: that would create a competing DCR.
+
+// Provision a scheduled query alert for AKS container restarts.
+module monitoringAlerts './modules/monitoring-alerts.bicep' = if (deployAks) {
+  name: 'monitoring-alerts-deployment'
+  params: {
+    location: location
+    workspaceId: logAnalytics!.outputs.workspaceId
+    alertEmail: alertEmail
+  }
+}

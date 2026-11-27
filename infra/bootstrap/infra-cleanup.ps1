@@ -129,7 +129,9 @@ if ($aks) {
     $aksDetail = Get-AzJson -Arguments @('aks','show','--resource-group',$appRg,'--name',$aksName)
     $aksManagedResourceGroup = $aksDetail.nodeResourceGroup
 }
-$vmEntry = @($bootstrapResources | Where-Object { $_.type -eq 'Microsoft.Compute/virtualMachines' -and $_.name -eq $vmName }) | Select-Object -First 1
+$vmEntry = @($bootstrapResources|
+Where-Object { $_.type -eq 'Microsoft.Compute/virtualMachines' -and $_.name -eq $vmName })|
+Select-Object -First 1
 
 # Exact names are defined in infra/bootstrap/main.bicep.
 $networkNames = @(
@@ -276,6 +278,7 @@ $knownAppIds = @(
     $aks.id
     $acr.id
     $logAnalytics.id
+    $restartAlerts | ForEach-Object { $_.id }
     $actionGroups | ForEach-Object { $_.id }
     $containerInsightsDcrs | ForEach-Object { $_.id }
     $containerInsightsSolutions | ForEach-Object { $_.id }

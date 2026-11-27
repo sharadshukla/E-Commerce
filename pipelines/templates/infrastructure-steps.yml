@@ -1,4 +1,4 @@
-
+﻿
 steps:
   # Step 1: Checkout GitHub repository
   - checkout: self
@@ -76,6 +76,7 @@ steps:
     displayName: 'Deploy Azure Infrastructure (ACR + AKS + Log Analytics)'
     env:
       AKS_ADMIN_GROUP_OBJECT_ID: $(aksAdminGroupObjectId)
+      MONITORING_ALERT_EMAIL: $(monitoringAlertEmail)
     inputs:
       azureSubscription: 'sc-az-ecommerce-wif'
       scriptType: 'pscore'
@@ -95,6 +96,11 @@ steps:
 
         Write-Host "AKS admin group object ID validation passed."
 
+        # Validate monitoring alert email
+        $alertEmail = $env:MONITORING_ALERT_EMAIL
+        if ([string]::IsNullOrWhiteSpace($alertEmail)) { throw 'Monitoring alert email was not supplied.' }
+        if ($alertEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { throw 'Monitoring alert email format is invalid.' }
+
         az deployment group create `
           --resource-group e-commerce-app `
           --name ecommerce-acr-deployment `
@@ -102,13 +108,27 @@ steps:
           --parameters `
               location=eastus `
               acrName=ecommerceregistrynew `
-              aksAdminGroupObjectId=$aksAdminGroupObjectId
+              aksAdminGroupObjectId=$aksAdminGroupObjectId `
+              alertEmail=$alertEmail
 
         if ($LASTEXITCODE -ne 0) {
             throw "Azure infrastructure deployment failed."
         }
 
         Write-Host "Azure infrastructure deployment completed successfully!"
+
+        # Verify the monitoring alert and email action group provisioned by Bicep.
+        $alert = az monitor scheduled-query show --resource-group e-commerce-app --name alert-ecommerce-container-restarts -o json | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $alert.enabled -ne $true -or $alert.severity -ne 2) {
+            throw 'Container restart alert verification failed.'
+        }
+
+        $actionGroup = az monitor action-group show --resource-group e-commerce-app --name ag-ecommerce-monitoring -o json | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $actionGroup.enabled -ne $true -or @($actionGroup.emailReceivers).Count -lt 1) {
+            throw 'Monitoring action group verification failed.'
+        }
+
+        Write-Host 'Bicep monitoring alert and email action group verified.'
 
 
         # One authoritative onboarding path: Azure CLI creates the agent's DCR/association.
